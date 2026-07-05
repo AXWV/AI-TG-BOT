@@ -17,7 +17,8 @@ from telegram.ext import (
     CallbackContext,
     JobQueue
 )
-# ====================== 核心配置（完全保留） ======================
+
+# ====================== 核心配置 ======================
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 BOT_DATA_DIR = os.path.join(ROOT_DIR, "bot_data")
 BACKUP_DIR = os.path.join(BOT_DATA_DIR, "backups")
@@ -26,14 +27,18 @@ RELATION_DIR = os.path.join(BOT_DATA_DIR, "relations")
 LOG_DIR = os.path.join(BOT_DATA_DIR, "logs")
 CONFIG_DIR = os.path.join(BOT_DATA_DIR, "configs")
 USER_MEMORY_DIR = os.path.join(HISTORY_DIR, "user_memories")
+
+# 创建必要目录
 for dir_path in [BOT_DATA_DIR, BACKUP_DIR, HISTORY_DIR, RELATION_DIR, LOG_DIR, CONFIG_DIR, USER_MEMORY_DIR]:
     os.makedirs(dir_path, exist_ok=True)
-# 固定密钥
+
+# 密钥配置
 TELEGRAM_BOT_TOKEN = "botapi"
 DEEPSEEK_API_KEY = "sk-api"
 DEEPSEEK_MODEL = "deepseek-chat"
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
-# 全局配置（完全保留）
+
+# 全局配置（含追加回复概率、成本控制）
 GLOBAL_CONFIG = {
     "reply_max_length": 100,
     "typing_delay_range": (1.5, 3.5),
@@ -45,9 +50,13 @@ GLOBAL_CONFIG = {
     "rate_limit_per_second": 5,
     "keep_alive_interval": 10,
     "keep_alive_timeout": 5,
-    "reconnect_attempts": 3
+    "reconnect_attempts": 3,
+    "append_reply_probability": 0.3,  # 30%概率触发追加回复（控制成本）
+    "max_api_tokens": 200,  # API最大令牌数
+    "api_retry_count": 2  # API最大重试次数
 }
-# 谢灵黯人设（完全保留）
+
+# 谢灵黯人设配置
 BOT_PROFILE = {
     "name": "谢灵黯",
     "short_name": "灵黯",
@@ -73,7 +82,8 @@ BOT_PROFILE = {
     15. 绝不对AXWV以外的用户使用亲密称呼。
     """
 }
-# 关系&昵称配置（完全保留）
+
+# 关系&昵称配置
 USER_NICKNAME_MAP = {"AXWV": 6795917907}
 RELATION_CONFIG = {
     "categories": ["家人", "亲密关系", "朋友", "陌生人"],
@@ -92,7 +102,8 @@ RELATION_CONFIG = {
     }
 }
 ALLOWED_RELATIONS = set(RELATION_CONFIG["categories"])
-# 情绪配置（完全保留）
+
+# 情绪配置
 DEFAULT_EMOTION_CONFIG = {
     "base_emotion": "开心",
     "emotions": ["开心", "撒娇", "委屈", "兴奋", "害羞"],
@@ -104,7 +115,7 @@ DEFAULT_EMOTION_CONFIG = {
         "害羞": ["男女朋友", "抱抱", "喜欢"]
     },
     "emotion_intensity": {
-        "开心": ["~", "~"],
+        "开心": ["~", "~~"],
         "撒娇": ["嘛", "嘛~"],
         "委屈": ["呜呜", "呜呜呜"],
         "兴奋": ["！", "！！"],
@@ -118,18 +129,22 @@ DEFAULT_EMOTION_CONFIG = {
         "有点害羞呢": "害羞"
     }
 }
+
+# 配置文件路径
 CONFIG_FILES = {
     "emotion": os.path.join(CONFIG_DIR, "emotion_config.json"),
     "sensitive": os.path.join(CONFIG_DIR, "sensitive_words.json"),
     "memory_keywords": os.path.join(CONFIG_DIR, "memory_keywords.json")
 }
-# 敏感词&记忆关键词（完全保留）
+
+# 敏感词&记忆关键词
 DEFAULT_SENSITIVE_WORDS = ["色情", "暴力", "赌博", "毒品", "政治敏感", "辱骂", "歧视"]
 DEFAULT_MEMORY_KEYWORDS = [
     "喜欢的电影", "喜欢的音乐", "爱好", "喜欢的游戏", "追剧", "学习趣事", "兴趣",
     "喜欢的美食", "作息习惯", "喜欢的书籍", "旅行偏好", "特长", "讨厌的东西"
 ]
-# 持久化文件路径（完全保留）
+
+# 持久化文件路径
 USER_MEMORY_FILE = os.path.join(HISTORY_DIR, "user_memories.json")
 CONVERSATION_HISTORY_FILE = os.path.join(HISTORY_DIR, "conversation_history.json")
 PERMANENT_RELATION_FILE = os.path.join(RELATION_DIR, "permanent_relations.json")
@@ -137,7 +152,8 @@ BLACKLIST_FILE = os.path.join(RELATION_DIR, "blacklist.json")
 LOG_FILE = os.path.join(LOG_DIR, "bot_operation.log")
 SYSTEM_STATUS_FILE = os.path.join(LOG_DIR, "system_status.log")
 MEMORY_MODIFY_RECORD_FILE = os.path.join(HISTORY_DIR, "memory_modify_records.json")
-# ====================== 全局存储（完全保留） ======================
+
+# ====================== 全局存储 ======================
 conversation_history: Dict[int, List[Tuple[str, str]]] = {}
 permanent_relations: Dict[int, str] = {}
 user_emotion_state: Dict[int, Tuple[str, int]] = {}
@@ -149,7 +165,8 @@ last_keep_alive_time: datetime = datetime.now()
 EMOTION_CONFIG = {}
 SENSITIVE_WORDS = []
 MEMORY_KEYWORDS = []
-# ====================== 初始化工具函数（完全保留） ======================
+
+# ====================== 初始化工具函数 ======================
 def load_config_file(file_path: str, default_data: dict) -> dict:
     if os.path.exists(file_path):
         with open(file_path, "r", encoding="utf-8") as f:
@@ -157,6 +174,7 @@ def load_config_file(file_path: str, default_data: dict) -> dict:
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(default_data, f, ensure_ascii=False, indent=2)
     return default_data
+
 def init_all_files():
     global EMOTION_CONFIG, SENSITIVE_WORDS, MEMORY_KEYWORDS
     EMOTION_CONFIG = load_config_file(CONFIG_FILES["emotion"], DEFAULT_EMOTION_CONFIG)
@@ -171,11 +189,13 @@ def init_all_files():
         if not os.path.exists(file_path):
             with open(file_path, "w", encoding="utf-8") as f:
                 json.dump({}, f, ensure_ascii=False, indent=2)
-# ====================== 长上下文记忆功能（完全保留） ======================
+
+# ====================== 长上下文记忆功能 ======================
 def load_user_global_memory(user_id: int) -> list:
     with open(USER_MEMORY_FILE, "r", encoding="utf-8") as f:
         memories = json.load(f)
     return memories.get(str(user_id), [])
+
 def save_user_global_memory(user_id: int, new_message: dict):
     memories = load_user_global_memory(user_id)
     memories.append(new_message)
@@ -187,6 +207,7 @@ def save_user_global_memory(user_id: int, new_message: dict):
         f.seek(0)
         json.dump(all_memories, f, ensure_ascii=False, indent=2)
         f.truncate()
+
 def build_context_prompt(user_id: int) -> str:
     global_memories = load_user_global_memory(user_id)
     if not global_memories:
@@ -195,8 +216,10 @@ def build_context_prompt(user_id: int) -> str:
     for msg in global_memories:
         context += f"用户：{msg['user_msg']}\n你：{msg['bot_msg']}\n"
     return context
+
 def get_user_memory_path(user_id: int) -> str:
     return os.path.join(USER_MEMORY_DIR, f"{user_id}-memory.json")
+
 def load_user_interest_memory(user_id: int) -> Dict[str, str]:
     memory_path = get_user_memory_path(user_id)
     if os.path.exists(memory_path):
@@ -207,6 +230,7 @@ def load_user_interest_memory(user_id: int) -> Dict[str, str]:
             write_log(f"用户{user_id}兴趣记忆文件损坏", "ERROR")
             return {}
     return {}
+
 def save_user_interest_memory(user_id: int, memory_dict: Dict[str, str]):
     memory_path = get_user_memory_path(user_id)
     try:
@@ -214,7 +238,8 @@ def save_user_interest_memory(user_id: int, memory_dict: Dict[str, str]):
             json.dump(memory_dict, f, ensure_ascii=False, indent=2)
     except Exception as e:
         write_log(f"保存用户{user_id}兴趣记忆失败: {str(e)}", "ERROR")
-# ====================== 日志&工具函数（完全保留） ======================
+
+# ====================== 日志&工具函数 ======================
 def write_log(content: str, level: str = "INFO"):
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
     log_line = f"[{timestamp}] [{level.upper()}] {content}\n"
@@ -224,6 +249,7 @@ def write_log(content: str, level: str = "INFO"):
         error_log_file = os.path.join(LOG_DIR, "error.log")
         with open(error_log_file, "a", encoding="utf-8") as f:
             f.write(log_line)
+
 def print_custom_log(user: User, chat_type: str, user_msg: str, bot_msg: str, delay: float, emotion: str, user_mem: dict, is_append: bool = False):
     timestamp = time.strftime("%H:%M:%S", time.localtime())
     user_name = USER_NICKNAME_MAP.get(user.username, user.full_name) or "未知用户"
@@ -235,6 +261,7 @@ def print_custom_log(user: User, chat_type: str, user_msg: str, bot_msg: str, de
     print("-" * 80)
     write_log(f"{user_name}(ID:{user_id}:{chat_type}):{user_msg}")
     write_log(f"bot({emotion}:{delay:.2f}秒:{reply_type}):{bot_msg}")
+
 def manage_user_memory(user_id: int, user_input: str) -> Optional[str]:
     delete_patterns = [
         r"(取消|删除|不算数|不要)我(之前|说过|提到)的(.*?)记忆",
@@ -284,6 +311,7 @@ def manage_user_memory(user_id: int, user_input: str) -> Optional[str]:
             save_memory_modify_records()
             return f"好哒~ 已经把你{keyword}改成{new_content.strip()}啦~"
     return None
+
 def extract_user_memory(user_id: int, user_input: str):
     user_mem = load_user_interest_memory(user_id)
     for keyword in MEMORY_KEYWORDS:
@@ -293,11 +321,13 @@ def extract_user_memory(user_id: int, user_input: str):
                 user_mem[keyword] = mem_value
                 write_log(f"提取用户{user_id}记忆：{keyword} = {mem_value}")
     save_user_interest_memory(user_id, user_mem)
+
 def check_sensitive_words(text: str) -> bool:
     for word in SENSITIVE_WORDS:
         if word in text:
             return True
     return False
+
 def is_rate_limited() -> bool:
     global rate_limit_counter
     now = time.time()
@@ -307,6 +337,7 @@ def is_rate_limited() -> bool:
         return True
     rate_limit_counter.append(now)
     return False
+
 def backup_data():
     global last_backup_time
     now = datetime.now()
@@ -330,7 +361,8 @@ def backup_data():
             write_log(f"删除旧备份：{old_backup}")
     except Exception as e:
         write_log(f"数据备份失败: {str(e)}", "ERROR")
-# ====================== t.me连接保活机制（完全保留） ======================
+
+# ====================== t.me连接保活机制 ======================
 def keep_alive(updater: Updater, job_queue: JobQueue):
     global last_keep_alive_time
     now = datetime.now()
@@ -366,10 +398,12 @@ def keep_alive(updater: Updater, job_queue: JobQueue):
                     write_log(f"所有重试失败，Bot将在10秒后重启...", "ERROR")
                     time.sleep(10)
                     os.execv(sys.executable, [sys.executable] + sys.argv)
-# ====================== 关系&情绪处理（完全保留） ======================
+
+# ====================== 关系&情绪处理 ======================
 def clean_relation_value(relation: str) -> str:
     cleaned = re.sub(r"\s*\(.*?\)\s*", "", relation).strip()
     return cleaned if cleaned in ALLOWED_RELATIONS else RELATION_CONFIG["default_relation"]
+
 def get_user_relation(user_id: int) -> str:
     if user_id in permanent_relations:
         cleaned_relation = clean_relation_value(permanent_relations[user_id])
@@ -383,11 +417,13 @@ def get_user_relation(user_id: int) -> str:
         if any(keyword in str(user_mem.values()) for keyword in keywords):
             return relation
     return RELATION_CONFIG["default_relation"]
+
 def get_user_nickname(user_id: int) -> str:
     for nickname, uid in USER_NICKNAME_MAP.items():
         if uid == user_id:
             return nickname
     return "朋友"
+
 def get_current_emotion(user_id: int, user_input: str) -> Tuple[str, int]:
     for switch_keyword, target_emotion in EMOTION_CONFIG["active_switch_keywords"].items():
         if switch_keyword in user_input:
@@ -401,6 +437,7 @@ def get_current_emotion(user_id: int, user_input: str) -> Tuple[str, int]:
             return (emotion, new_intensity)
     user_emotion_state[user_id] = (current_emotion, 1)
     return (current_emotion, 1)
+
 def add_emotion_intensity(text: str, emotion: str, intensity: int, is_append: bool = False) -> str:
     if is_append:
         text = text.replace("~", "").replace("！", "").replace("嘛", "").replace("呜呜", "")
@@ -420,6 +457,7 @@ def add_emotion_intensity(text: str, emotion: str, intensity: int, is_append: bo
     elif emotion == "害羞":
         return symbol + text.lstrip("软软")
     return text
+
 def clean_reply_text(text: str, is_append: bool = False) -> str:
     redundant_forbidden = [
         "带你去", "一起去", "出来玩", "见面", "约你", "线下", 
@@ -444,7 +482,8 @@ def clean_reply_text(text: str, is_append: bool = False) -> str:
         cut_pos = cut_pos if cut_pos != -1 else GLOBAL_CONFIG["reply_max_length"]
         text = text[:cut_pos].strip()
     return text
-# ====================== 核心API调用（完全保留） ======================
+
+# ====================== 核心API调用（智能追加+成本控制） ======================
 async def call_deepseek_api(
     user_id: int,
     user_input: str,
@@ -458,21 +497,24 @@ async def call_deepseek_api(
     rel_template = RELATION_CONFIG["relation_templates"][final_relation]
     rel_desc = BOT_PROFILE["relationship_desc"].get(str(user_id), final_relation) if user_id == 6795917907 else final_relation
     memory_text = "用户记忆：" + "；".join([f"{k}={v}" for k, v in user_mem.items()]) if user_mem else "暂无用户记忆"
-    SEPARATOR = "###APPEND###"
+    SEPARATOR = "‖‖"  # 固定分隔符，确保分割正确
+    need_append = random.random() < GLOBAL_CONFIG["append_reply_probability"]  # 随机触发追加回复
+    
+    # 强化system prompt，确保AI遵守格式和逻辑
     system_prompt = f"""
 你是{BOT_PROFILE['name']}，{BOT_PROFILE['rule']}
 用户关系：{rel_desc}，{rel_template}
 用户记忆：{memory_text}
 当前情绪：{emotion_type}，强度{emotion_intensity}，用语气词表达（开心~最多2个，兴奋！最多2个）。
-回复要求（必须严格遵守）：
-1. 先写主回复：{GLOBAL_CONFIG['reply_max_length']}字以内，口语化，符合人设；
-2. 若有相关补充，用{SEPARATOR}分隔，再写追加回复：
-   - 最多{GLOBAL_CONFIG['reply_max_length']//2}字，无波浪号、无情绪符号；
-   - 必须和主回复强相关，仅补充细节/情感，不偏离话题、不提出新问题；
-3. 无补充则追加回复写None；
-4. 绝对禁止虚构信息、线下邀约、无关内容。
+回复要求（必须严格遵守，违反则回复无效）：
+1. 仅当需要补充细节/强化情感时才写追加回复，无需补充则强制返回{SEPARATOR}None；
+2. 格式强制：主回复{SEPARATOR}追加回复（无追加则写{SEPARATOR}None），不可省略分隔符；
+3. 主回复：{GLOBAL_CONFIG['reply_max_length']}字以内，口语化，符合人设和当前情绪；
+4. 追加回复（可选）：最多{GLOBAL_CONFIG['reply_max_length']//2}字，无波浪号、无情绪符号，与主回复强相关；
+5. 绝对禁止虚构信息、线下邀约、无关内容，禁止追加回复提新问题或偏离主题。
 """
     
+    # 构建对话历史（保留最近5轮，平衡语境与成本）
     messages = [{"role": "system", "content": system_prompt.strip()}]
     history = conversation_history.get(user_id, [])[-5:]
     for u_msg, b_msg in history:
@@ -485,13 +527,14 @@ async def call_deepseek_api(
         "model": DEEPSEEK_MODEL,
         "messages": messages,
         "temperature": 0.95 if user_id == 6795917907 else 0.7,
-        "max_tokens": 300,
+        "max_tokens": GLOBAL_CONFIG["max_api_tokens"],
         "stream": False,
         "top_p": 0.9
     }
     
+    # API调用重试逻辑
     retry_count = 0
-    max_retry = 3
+    max_retry = GLOBAL_CONFIG["api_retry_count"]
     while retry_count < max_retry:
         try:
             async with aiohttp.ClientSession() as session:
@@ -499,27 +542,32 @@ async def call_deepseek_api(
                     DEEPSEEK_API_URL,
                     headers=headers,
                     json=payload,
-                    timeout=20
+                    timeout=15
                 ) as resp:
                     if resp.status == 200:
                         result = await resp.json()
                         raw_reply = result["choices"][0]["message"]["content"].strip()
                         
-                        if SEPARATOR in raw_reply:
-                            main_reply_raw, append_reply_raw = raw_reply.split(SEPARATOR, 1)
-                            main_reply = clean_reply_text(add_emotion_intensity(main_reply_raw.strip(), emotion_type, emotion_intensity))
-                            append_reply = append_reply_raw.strip()
-                            
-                            if append_reply == "None" or not append_reply:
-                                return main_reply, None
-                            main_keywords = re.findall(r"[\u4e00-\u9fa5]{2,}", main_reply)
-                            if not main_keywords:
-                                return main_reply, clean_reply_text(append_reply, is_append=True)
-                            relevance = any(keyword in append_reply for keyword in main_keywords[:3])
-                            return main_reply, clean_reply_text(append_reply, is_append=True) if relevance else None
-                        else:
+                        # 处理AI格式错误：无分隔符时仅返回主回复
+                        if SEPARATOR not in raw_reply:
                             main_reply = clean_reply_text(add_emotion_intensity(raw_reply.strip(), emotion_type, emotion_intensity))
                             return main_reply, None
+                        
+                        # 分割主回复和追加回复
+                        main_reply_raw, append_reply_raw = raw_reply.split(SEPARATOR, 1)
+                        main_reply = clean_reply_text(add_emotion_intensity(main_reply_raw.strip(), emotion_type, emotion_intensity))
+                        append_reply = append_reply_raw.strip()
+                        
+                        # 过滤无效追加回复
+                        if append_reply in ["None", "", "无", "没有"]:
+                            return main_reply, None
+                        if len(append_reply) > GLOBAL_CONFIG["reply_max_length"]//2:
+                            append_reply = append_reply[:GLOBAL_CONFIG["reply_max_length"]//2].strip()
+                        # 检查关联性：主回复关键词必须在追加回复中
+                        main_keywords = re.findall(r"[\u4e00-\u9fa5]{2,}", main_reply)[:3]
+                        if not main_keywords or not any(keyword in append_reply for keyword in main_keywords):
+                            return main_reply, None
+                        return main_reply, clean_reply_text(append_reply, is_append=True)
                     else:
                         error_msg = await resp.text()
                         write_log(f"API错误状态码{resp.status}: {error_msg}", "ERROR")
@@ -530,9 +578,11 @@ async def call_deepseek_api(
             retry_count += 1
             await asyncio.sleep(1)
     
-    main_reply = clean_reply_text(add_emotion_intensity("我刚才没太听清呢~ 你再说一遍好不好~", "委屈", 1))
+    # 调用失败 fallback
+    main_reply = clean_reply_text(add_emotion_intensity("刚才有点卡呀~ 你再说一遍好不好~", "委屈", 1))
     return main_reply, None
-# ====================== 主回复&追加回复处理（完全保留） ======================
+
+# ====================== 主回复&追加回复处理 ======================
 async def get_main_and_append_reply(
     user_id: int,
     user_input: str,
@@ -544,7 +594,8 @@ async def get_main_and_append_reply(
     append_delay = round(random.uniform(*GLOBAL_CONFIG["append_reply_delay_range"]), 1)
     main_reply, append_reply = await call_deepseek_api(user_id, user_input, user_mem, emotion, relation)
     return main_reply, append_reply, main_delay, append_delay
-# ====================== 数据加载/保存（完全保留） ======================
+
+# ====================== 数据加载/保存 ======================
 def load_all_data():
     global user_blacklist
     try:
@@ -574,42 +625,29 @@ def load_all_data():
         write_log("记忆修改记录加载成功")
     except Exception as e:
         write_log(f"加载记忆修改记录失败: {str(e)}", "ERROR")
+
 def save_conversation_history():
     try:
         with open(CONVERSATION_HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(conversation_history, f, ensure_ascii=False, indent=2)
     except Exception as e:
         write_log(f"保存对话历史失败: {str(e)}", "ERROR")
+
 def save_permanent_relations():
     try:
         with open(PERMANENT_RELATION_FILE, "w", encoding="utf-8") as f:
             json.dump(permanent_relations, f, ensure_ascii=False, indent=2)
     except Exception as e:
         write_log(f"保存用户关系失败: {str(e)}", "ERROR")
+
 def save_memory_modify_records():
     try:
         with open(MEMORY_MODIFY_RECORD_FILE, "w", encoding="utf-8") as f:
             json.dump(memory_modify_records, f, ensure_ascii=False, indent=2)
     except Exception as e:
         write_log(f"保存记忆修改记录失败: {str(e)}", "ERROR")
-# ====================== 核心消息处理（修复await错误） ======================
-def handle_message(update: Update, context: CallbackContext):
-    if is_rate_limited():
-        return
-    # 关键修复：为Termux调度线程创建并设置事件循环
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        # 无当前循环时，创建新循环并绑定到线程
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    # 确保循环未关闭
-    if loop.is_closed():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    # 运行异步处理函数
-    loop.run_until_complete(_handle_message_async(update, context))
-    backup_data()
+
+# ====================== 核心消息处理（持续监听修复） ======================
 async def _handle_message_async(update: Update, context: CallbackContext):
     user = update.effective_user
     user_id = user.id
@@ -617,22 +655,26 @@ async def _handle_message_async(update: Update, context: CallbackContext):
     chat = update.effective_chat
     chat_id = chat.id
     
+    # 黑名单过滤
     if user_id in user_blacklist:
         write_log(f"黑名单用户{user_id}尝试发送消息: {user_input}", "WARN")
         return
     
+    # 超长消息过滤
     if len(user_input) > GLOBAL_CONFIG["max_user_input_length"]:
         reply = clean_reply_text(add_emotion_intensity("你的消息有点长呀~ 精简一点告诉我好不好~", "撒娇", 1))
-        update.message.reply_text(reply)  # 修复：移除多余await
+        await update.message.reply_text(reply)
         write_log(f"用户{user_id}发送超长消息（{len(user_input)}字），已拒绝", "WARN")
         return
     
+    # 敏感词过滤
     if check_sensitive_words(user_input):
         reply = clean_reply_text(add_emotion_intensity("这个话题我不太想聊呢~ 换个别的吧~", "委屈", 1))
-        update.message.reply_text(reply)  # 修复：移除多余await
+        await update.message.reply_text(reply)
         write_log(f"用户{user_id}发送敏感内容: {user_input}", "WARN")
         return
     
+    # 群聊/私聊回复判断
     if chat.type == Chat.PRIVATE:
         chat_type = "私聊"
         need_reply = True
@@ -644,28 +686,35 @@ async def _handle_message_async(update: Update, context: CallbackContext):
         write_log(f"[{chat_type}] 用户{user_id}消息无需回复: {user_input}")
         return
     
+    # 记忆管理（删除/修改）
     memory_manage_reply = manage_user_memory(user_id, user_input)
     if memory_manage_reply:
-        update.message.reply_text(memory_manage_reply)  # 修复：移除多余await
+        await update.message.reply_text(memory_manage_reply)
         save_memory_modify_records()
         write_log(f"用户{user_id}执行记忆管理: {user_input} -> 回复: {memory_manage_reply}")
         return
     
+    # 提取用户记忆
     extract_user_memory(user_id, user_input)
     user_mem = load_user_interest_memory(user_id)
     
+    # 获取关系和情绪
     relation = get_user_relation(user_id)
     emotion = get_current_emotion(user_id, user_input)
     emotion_str = f"{emotion[0]}（强度{emotion[1]}）"
     
-    context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-    await asyncio.sleep(0.5)  # 异步延迟保留，仅用于模拟打字
+    # 模拟打字状态
+    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+    await asyncio.sleep(0.5)
     
+    # 获取主回复和追加回复
     main_reply, append_reply, main_delay, append_delay = await get_main_and_append_reply(user_id, user_input, user_mem, emotion, relation)
     
-    await asyncio.sleep(main_delay)  # 异步延迟保留，仅用于模拟打字
-    update.message.reply_text(main_reply)  # 修复：移除多余await
+    # 发送主回复
+    await asyncio.sleep(main_delay)
+    await update.message.reply_text(main_reply)
     
+    # 保存对话历史和全局记忆
     if user_id not in conversation_history:
         conversation_history[user_id] = []
     conversation_history[user_id].append((user_input, main_reply))
@@ -682,6 +731,7 @@ async def _handle_message_async(update: Update, context: CallbackContext):
         }
     )
     
+    # 打印日志
     print_custom_log(
         user=user,
         chat_type=chat_type,
@@ -693,26 +743,29 @@ async def _handle_message_async(update: Update, context: CallbackContext):
         is_append=False
     )
     
+    # 群打招呼功能
     if "去" in user_input and "群" in user_input and "打招呼" in user_input:
         chat_id_match = re.search(r"ID:\s*(-?\d+)", user_input)
         if chat_id_match:
             chat_id_target = chat_id_match.group(1)
             try:
                 chat_id_int = int(chat_id_target)
-                context.bot.send_chat_action(chat_id=chat_id_int, action=ChatAction.TYPING)
-                await asyncio.sleep(1)  # 异步延迟保留
-                context.bot.send_message(chat_id=chat_id_int, text="大家好呀~ 我是灵黯")  # 修复：移除多余await
+                await context.bot.send_chat_action(chat_id=chat_id_int, action=ChatAction.TYPING)
+                await asyncio.sleep(1)
+                await context.bot.send_message(chat_id=chat_id_int, text="大家好呀~ 我是灵黯")
                 write_log(f"向群{chat_id_target}发送打招呼消息")
-                update.message.reply_text("我已经去群里打招呼啦~")  # 修复：移除多余await
+                await update.message.reply_text("我已经去群里打招呼啦~")
             except Exception as e:
                 write_log(f"群打招呼失败: {str(e)}", "ERROR")
-                update.message.reply_text("我好像进不去这个群呢~ 可能没被邀请哦~")  # 修复：移除多余await
+                await update.message.reply_text("我好像进不去这个群呢~ 可能没被邀请哦~")
     
+    # 发送追加回复（如有）
     if append_reply:
-        context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-        await asyncio.sleep(append_delay)  # 异步延迟保留
-        update.message.reply_text(append_reply)  # 修复：移除多余await
+        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        await asyncio.sleep(append_delay)
+        await update.message.reply_text(append_reply)
         
+        # 保存追加回复到对话历史
         conversation_history[user_id].append(("", append_reply))
         if len(conversation_history[user_id]) > GLOBAL_CONFIG["max_history_rounds"]:
             conversation_history[user_id].pop(0)
@@ -727,6 +780,7 @@ async def _handle_message_async(update: Update, context: CallbackContext):
             }
         )
         
+        # 打印追加回复日志
         print_custom_log(
             user=user,
             chat_type=chat_type,
@@ -737,41 +791,46 @@ async def _handle_message_async(update: Update, context: CallbackContext):
             user_mem=user_mem,
             is_append=True
         )
-# ====================== 启动命令处理（修复await错误） ======================
-def start_async(update: Update, context: CallbackContext):
-    update.message.reply_text("你好呀，我是灵黯~ 很高兴认识你！")  # 修复：移除多余await和async
+
+def handle_message(update: Update, context: CallbackContext):
+    if is_rate_limited():
+        return
+    # 线程安全运行异步函数，确保持续监听
+    asyncio.run_coroutine_threadsafe(_handle_message_async(update, context), asyncio.get_event_loop())
+    backup_data()
+
+# ====================== 启动命令处理 ======================
+async def start_async(update: Update, context: CallbackContext):
+    await update.message.reply_text("你好呀，我是灵黯~ 很高兴认识你！")
+
 def start(update: Update, context: CallbackContext):
-    # 同样修复事件循环问题
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    if loop.is_closed():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    loop.run_until_complete(asyncio.sleep(0))  # 仅启动循环，无需await同步函数
-    start_async(update, context)
-# ====================== 主函数（完全保留） ======================
+    asyncio.run_coroutine_threadsafe(start_async(update, context), asyncio.get_event_loop())
+
+# ====================== 主函数 ======================
 def main():
     init_all_files()
     load_all_data()
     write_log("Bot启动，所有数据加载完成")
     
+    # 初始化Bot
     updater = Updater(token=TELEGRAM_BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
     job_queue = updater.job_queue
     
+    # 添加命令和消息处理器
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
     
+    # 启动保活机制
     keep_alive(updater, job_queue)
     write_log(f"t.me连接保活机制已启动，保活间隔：{GLOBAL_CONFIG['keep_alive_interval']}秒", "INFO")
     
+    # 启动Bot（缩短轮询间隔，提升实时性）
     print(f"Bot [{BOT_PROFILE['name']}] 已启动，监听t.me消息中...")
     print(f"数据存储目录: {BOT_DATA_DIR}")
-    print(f"核心特性：多次回复支持+自然延迟+保活机制+亲密关系限定AXWV")
-    updater.start_polling(poll_interval=1.0)
+    print(f"核心特性：持续监听+智能追加回复（30%概率）+用户记忆+API成本控制")
+    updater.start_polling(poll_interval=0.5)
     updater.idle()
+
 if __name__ == "__main__":
     main()
