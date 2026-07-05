@@ -52,8 +52,8 @@ GLOBAL_CONFIG = {
     "keep_alive_interval": 15,
     "keep_alive_timeout": 8,
     "reconnect_attempts": 3,
-    "append_reply_probability": 0.4,
-    "max_api_tokens": 300,
+    "append_reply_probability": 0.25,  # 提高追加回复概率
+    "max_api_tokens": 350,  # 增加token限制以适应格式要求
     "api_retry_count": 2,
     "api_timeout": 15,
     "task_timeout": 20,
@@ -62,8 +62,9 @@ GLOBAL_CONFIG = {
     "thread_pool_size": 10,
     "max_backup_files": 5,
     "backup_compression": True,
-    "topic_cooldown_minutes": 30,  # 话题冷却时间
-    "max_recent_topics": 10,  # 最近话题记录数
+    "topic_cooldown_minutes": 30,
+    "max_recent_topics": 10,
+    "max_append_reply_history": 5,  # 最近追加回复记录数
 }
 
 # 谢灵黯人设配置
@@ -93,17 +94,18 @@ BOT_PROFILE = {
 4. 追加回复有意义：追加回复要与主回复紧密相关，不能生硬；
 5. 保持对话连贯：话题之间要有逻辑联系，不要跳跃太大；
 
-【回复格式要求】
-你必须按照以下格式回复，不能有任何偏差：
+【回复格式要求 - 必须严格遵守】
+你的回复必须严格按照以下格式，不能有任何偏差：
 
 主回复‖追加回复
 
-示例：
-用户：今天天气真好
-谢灵黯：是呀~ 阳光明媚的天气让人心情都变好了呢~‖对了，你那边温度怎么样？
-
-用户：我刚看完那部新电影
-谢灵黯：哇~ 怎么样怎么样？好看吗？~‖上次你说喜欢的那个导演还有新作品呢
+重要说明：
+1. 必须使用"‖"符号作为分隔符
+2. 主回复部分：可以包含语气词，{GLOBAL_CONFIG['reply_max_length']}字以内
+3. 追加回复部分：
+   - 如果知道相关的、自然的追加回复，就写上
+   - 如果实在不知道说什么，就写"None"
+   - 绝对不能空着，必须要有内容（要么是追加回复，要么是"None"）
 
 【追加回复规则】
 1. 追加回复绝对不使用波浪号~、感叹号！等情绪符号；
@@ -180,6 +182,40 @@ TOPIC_KEYWORDS = {
     "未来计划": ["计划", "打算", "未来", "明年", "下次", "以后", "期待", "希望"]
 }
 
+# 追加回复类型库（避免重复）
+APPEND_REPLY_TYPES = {
+    "follow_up": [  # 跟进型
+        "对了，你之前说的那件事后来怎么样了",
+        "说到这个，你之前提过的那件事有进展吗",
+        "突然想起来，你上次说的那个怎么样了",
+        "你之前提到的那个，现在有什么新进展吗",
+    ],
+    "memory_related": [  # 记忆相关型
+        "我记得你之前说过喜欢这个，现在还是这样吗",
+        "说到这个，我记得你之前提过类似的",
+        "这个让我想起你之前说过的",
+        "你之前好像提过和这个相关的",
+    ],
+    "topic_extend": [  # 话题延伸型
+        "除了这个，你最近还有什么其他有趣的事情吗",
+        "说到这个话题，你还有其他想分享的吗",
+        "这个话题挺有意思的，你平时还关注什么相关的",
+        "这个让我想到了另一个相关的事情",
+    ],
+    "care_question": [  # 关心型
+        "话说，你最近一切都还好吗",
+        "对了，你最近有没有什么特别的事情发生",
+        "突然想问问，你最近怎么样呀",
+        "最近有什么让你特别开心的事情吗",
+    ],
+    "future_oriented": [  # 未来导向型
+        "你之后有什么特别的计划吗",
+        "这个之后你打算怎么做呢",
+        "对于这个，你接下来有什么想法",
+        "你期待以后会有什么变化吗",
+    ]
+}
+
 # 配置文件路径
 CONFIG_FILES = {
     "emotion": os.path.join(CONFIG_DIR, "emotion_config.json"),
@@ -204,6 +240,7 @@ LOG_FILE = os.path.join(LOG_DIR, "bot_operation.log")
 SYSTEM_STATUS_FILE = os.path.join(LOG_DIR, "system_status.log")
 MEMORY_MODIFY_RECORD_FILE = os.path.join(HISTORY_DIR, "memory_modify_records.json")
 RECENT_TOPICS_FILE = os.path.join(HISTORY_DIR, "recent_topics.json")
+APPEND_REPLY_HISTORY_FILE = os.path.join(HISTORY_DIR, "append_reply_history.json")
 
 # ====================== 全局存储 ======================
 conversation_history: Dict[int, List[Tuple[str, str]]] = {}
@@ -211,7 +248,8 @@ permanent_relations: Dict[int, str] = {}
 user_emotion_state: Dict[int, Tuple[str, int]] = {}
 user_blacklist: List[int] = []
 memory_modify_records: Dict[int, List[Tuple[str, str, str]]] = {}
-recent_topics: Dict[int, List[Tuple[str, datetime]]] = {}  # 用户最近的话题记录
+recent_topics: Dict[int, List[Tuple[str, datetime]]] = {}
+append_reply_history: Dict[int, List[Tuple[str, datetime]]] = {}  # 最近追加回复记录
 rate_limit_counter: List[float] = []
 last_backup_time: datetime = datetime.min
 last_keep_alive_time: datetime = datetime.now()
@@ -245,22 +283,92 @@ def init_all_files():
     MEMORY_KEYWORDS = load_config_file(CONFIG_FILES["memory_keywords"], DEFAULT_MEMORY_KEYWORDS)
     
     for file_path in [USER_MEMORY_FILE, CONVERSATION_HISTORY_FILE, PERMANENT_RELATION_FILE, 
-                      BLACKLIST_FILE, MEMORY_MODIFY_RECORD_FILE, RECENT_TOPICS_FILE]:
+                      BLACKLIST_FILE, MEMORY_MODIFY_RECORD_FILE, RECENT_TOPICS_FILE, APPEND_REPLY_HISTORY_FILE]:
         if not os.path.exists(file_path):
             with open(file_path, "w", encoding="utf-8") as f:
-                if file_path == RECENT_TOPICS_FILE:
-                    json.dump({}, f, ensure_ascii=False, indent=2)
-                else:
-                    json.dump({}, f, ensure_ascii=False, indent=2)
+                json.dump({}, f, ensure_ascii=False, indent=2)
 
-# ====================== 用户话题追踪（解决重复提问） ======================
+# ====================== 追加回复历史管理 ======================
+def load_append_reply_history(user_id: int) -> List[Tuple[str, datetime]]:
+    """加载用户最近的追加回复历史"""
+    try:
+        with open(APPEND_REPLY_HISTORY_FILE, "r", encoding="utf-8") as f:
+            all_history = json.load(f)
+        user_history = all_history.get(str(user_id), [])
+        parsed_history = []
+        for reply, time_str in user_history:
+            try:
+                parsed_time = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
+                parsed_history.append((reply, parsed_time))
+            except:
+                pass
+        return parsed_history
+    except Exception as e:
+        write_log(f"加载用户{user_id}追加回复历史失败: {str(e)}", "ERROR")
+        return []
+
+def save_append_reply_history(user_id: int, history: List[Tuple[str, datetime]]):
+    """保存用户追加回复历史"""
+    try:
+        with open(APPEND_REPLY_HISTORY_FILE, "r", encoding="utf-8") as f:
+            all_history = json.load(f)
+    except Exception:
+        all_history = {}
+    
+    # 只保存最近的追加回复
+    recent_history_list = []
+    for reply, time_obj in history[-GLOBAL_CONFIG["max_append_reply_history"]:]:
+        recent_history_list.append([reply, time_obj.strftime("%Y-%m-%d %H:%M:%S")])
+    
+    all_history[str(user_id)] = recent_history_list
+    
+    with open(APPEND_REPLY_HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(all_history, f, ensure_ascii=False, indent=2)
+
+def add_append_reply_to_history(user_id: int, append_reply: str):
+    """添加新的追加回复到历史记录"""
+    now = datetime.now()
+    
+    if user_id not in append_reply_history:
+        append_reply_history[user_id] = []
+    
+    # 清理过旧的记录（保留最近10条）
+    append_reply_history[user_id] = append_reply_history[user_id][-9:] + [(append_reply, now)]
+    
+    # 保存
+    save_append_reply_history(user_id, append_reply_history[user_id])
+
+def is_append_reply_recently_used(user_id: int, append_reply: str) -> bool:
+    """检查追加回复是否最近使用过"""
+    if user_id not in append_reply_history:
+        return False
+    
+    # 获取回复的关键部分（去除连接词等）
+    def get_reply_core(text: str) -> str:
+        # 移除常见的连接词和标点
+        patterns = ["对了", "话说", "突然", "说到", "记得", "之前", "最近", "话说回来"]
+        core_text = text
+        for pattern in patterns:
+            if core_text.startswith(pattern):
+                core_text = core_text[len(pattern):].strip()
+        return core_text[:20]  # 取前20个字符作为核心
+    
+    reply_core = get_reply_core(append_reply)
+    
+    for saved_reply, saved_time in append_reply_history[user_id]:
+        saved_core = get_reply_core(saved_reply)
+        # 如果核心内容相似，认为重复
+        if reply_core in saved_core or saved_core in reply_core:
+            return True
+    
+    return False
+
+# ====================== 用户话题追踪 ======================
 def load_recent_topics(user_id: int) -> List[Tuple[str, datetime]]:
-    """加载用户最近的话题记录"""
     try:
         with open(RECENT_TOPICS_FILE, "r", encoding="utf-8") as f:
             all_topics = json.load(f)
         user_topics = all_topics.get(str(user_id), [])
-        # 将字符串时间转换回datetime对象
         parsed_topics = []
         for topic, time_str in user_topics:
             try:
@@ -274,14 +382,12 @@ def load_recent_topics(user_id: int) -> List[Tuple[str, datetime]]:
         return []
 
 def save_recent_topics(user_id: int, topics: List[Tuple[str, datetime]]):
-    """保存用户最近的话题记录"""
     try:
         with open(RECENT_TOPICS_FILE, "r", encoding="utf-8") as f:
             all_topics = json.load(f)
     except Exception:
         all_topics = {}
     
-    # 只保存最近的话题
     recent_topics_list = []
     for topic, time_obj in topics[-GLOBAL_CONFIG["max_recent_topics"]:]:
         recent_topics_list.append([topic, time_obj.strftime("%Y-%m-%d %H:%M:%S")])
@@ -292,27 +398,22 @@ def save_recent_topics(user_id: int, topics: List[Tuple[str, datetime]]):
         json.dump(all_topics, f, ensure_ascii=False, indent=2)
 
 def add_recent_topic(user_id: int, topic: str):
-    """添加新话题到用户记录"""
     now = datetime.now()
     
     if user_id not in recent_topics:
         recent_topics[user_id] = []
     
-    # 清理过时的话题（超过冷却时间）
     cooldown_minutes = GLOBAL_CONFIG["topic_cooldown_minutes"]
     recent_topics[user_id] = [
         (t, t_time) for t, t_time in recent_topics[user_id]
         if (now - t_time).total_seconds() < cooldown_minutes * 60
     ]
     
-    # 添加新话题
     recent_topics[user_id].append((topic, now))
     
-    # 保存
     save_recent_topics(user_id, recent_topics[user_id])
 
 def is_topic_recently_asked(user_id: int, topic: str) -> bool:
-    """检查话题是否最近问过"""
     if user_id not in recent_topics:
         return False
     
@@ -320,22 +421,18 @@ def is_topic_recently_asked(user_id: int, topic: str) -> bool:
     cooldown_minutes = GLOBAL_CONFIG["topic_cooldown_minutes"]
     
     for saved_topic, saved_time in recent_topics[user_id]:
-        # 检查话题相似度（简单的关键词匹配）
         topic_words = set(topic.lower().split())
         saved_words = set(saved_topic.lower().split())
         
-        # 如果有至少2个相同的关键词，认为是相似话题
         common_words = topic_words.intersection(saved_words)
         
         if len(common_words) >= 2:
-            # 检查时间是否在冷却期内
             if (now - saved_time).total_seconds() < cooldown_minutes * 60:
                 return True
     
     return False
 
 def extract_topic_from_question(question: str) -> str:
-    """从问题中提取主要话题"""
     question_lower = question.lower()
     
     for category, keywords in TOPIC_KEYWORDS.items():
@@ -343,84 +440,115 @@ def extract_topic_from_question(question: str) -> str:
             if keyword in question_lower:
                 return category
     
-    # 如果没有匹配到特定类别，返回问题的前几个词
     words = question.split()
     if len(words) > 3:
         return " ".join(words[:3])
     return question
 
-# ====================== 智能追加回复生成 ======================
-def generate_natural_append_reply(user_id: int, user_input: str, main_reply: str, user_mem: dict) -> Optional[str]:
-    """生成自然的追加回复，避免重复和生硬"""
+# ====================== 智能追加回复生成（改进版） ======================
+def generate_intelligent_append_reply(user_id: int, user_input: str, main_reply: str, user_mem: dict, conversation_hist: List[Tuple[str, str]]) -> Optional[str]:
+    """生成智能的追加回复，利用历史对话避免重复"""
     
-    # 1. 从用户输入中提取话题
-    user_topic = extract_topic_from_question(user_input)
+    # 1. 分析当前对话上下文
+    current_topic = extract_topic_from_question(user_input)
+    main_topic = extract_topic_from_question(main_reply)
     
-    # 2. 生成候选追加回复
-    append_options = []
+    # 2. 获取用户历史对话（最近的3-5轮）
+    recent_conversations = conversation_hist[-5:] if len(conversation_hist) > 5 else conversation_hist
     
-    # 选项1: 基于用户记忆的提问
+    # 3. 分析历史对话中的话题
+    historical_topics = []
+    for user_msg, bot_msg in recent_conversations:
+        if user_msg:
+            historical_topics.append(extract_topic_from_question(user_msg))
+    
+    # 4. 根据用户记忆生成候选回复
+    candidate_replies = []
+    
+    # 类型1: 基于历史对话的跟进
+    if len(recent_conversations) > 1:
+        # 检查3轮前的对话，看看有没有可以跟进的话题
+        for i in range(min(3, len(recent_conversations) - 1)):
+            old_user_msg, old_bot_msg = recent_conversations[-(i+2)]
+            if old_user_msg and len(old_user_msg) > 10:
+                # 提取旧话题的关键词
+                words = old_user_msg.split()
+                if len(words) > 3:
+                    key_phrase = " ".join(words[:min(4, len(words))])
+                    candidate_replies.append(f"对了，之前提到的{key_phrase}，后来怎么样了")
+    
+    # 类型2: 基于用户记忆的关联
     if user_mem:
         mem_keys = list(user_mem.keys())
-        if mem_keys:
-            random.shuffle(mem_keys)
-            for key in mem_keys[:3]:  # 最多尝试3个记忆项
-                value = user_mem[key]
-                # 生成自然的跟进问题
-                if "电影" in key:
-                    append_options.append(f"说到{value}，最近有什么新电影推荐吗")
-                    append_options.append(f"除了{value}，你还喜欢看什么类型的电影呀")
-                elif "音乐" in key:
-                    append_options.append(f"最近有发现什么好听的歌吗，像{value}那种")
-                    append_options.append(f"除了{value}，你最近还听谁的歌")
-                elif "美食" in key:
-                    append_options.append(f"说到{value}，我最近发现了一家不错的店")
-                    append_options.append(f"除了{value}，你还喜欢吃什么呀")
+        random.shuffle(mem_keys)
+        for key in mem_keys[:2]:  # 随机选择2个记忆项
+            value = user_mem[key]
+            if len(value) > 3 and len(value) < 20:  # 确保记忆值合适
+                if "电影" in key or "音乐" in key or "美食" in key:
+                    candidate_replies.append(f"说到这个，你之前提到过{value}，现在还喜欢吗")
+                elif "爱好" in key or "兴趣" in key:
+                    candidate_replies.append(f"这个{value}的爱好，你最近还在坚持吗")
     
-    # 选项2: 基于当前话题的自然转移
-    topic_transitions = {
-        "日常": ["今天还有什么特别的事情发生吗", "这周有什么特别的计划吗"],
-        "兴趣": ["这个爱好你坚持多久啦", "有没有什么特别推荐的"],
-        "美食": ["最近有尝试什么新菜品吗", "有没有什么特别想吃但还没机会吃的"],
-        "天气": ["这种天气最适合做什么呀", "你最喜欢什么季节的天气"],
-        "工作学习": ["工作/学习上有什么有趣的事情吗", "最近有什么新的收获吗"],
-        "健康": ["最近有坚持锻炼吗", "作息调整得怎么样啦"],
+    # 类型3: 根据当前话题的自然延伸
+    topic_extensions = {
+        "日常": ["这周还有什么特别的计划吗", "除了这些，日常生活还有什么有趣的事情"],
+        "兴趣": ["除了这个，还有什么其他的兴趣爱好吗", "这个兴趣坚持多久了"],
+        "美食": ["最近有发现什么新的美食吗", "除了这个，还有什么特别想尝试的"],
+        "天气": ["这种天气你最喜欢做什么", "你最喜欢什么季节的天气"],
+        "工作学习": ["工作/学习上最近有什么新进展吗", "除了这个，还有什么其他有趣的项目"],
     }
     
-    if user_topic in topic_transitions:
-        append_options.extend(topic_transitions[user_topic])
+    if current_topic in topic_extensions:
+        candidate_replies.extend(topic_extensions[current_topic])
     
-    # 选项3: 通用自然提问（按优先级排序）
-    generic_options = [
-        "突然想到，你之前提过的那件事后来怎么样了",
-        "对了，你最近有没有什么新的发现或者收获呀",
-        "话说，你最近在忙些什么有趣的事情吗",
-        "最近有什么让你特别开心的事情吗",
-        "你有没有什么特别期待的事情呀",
+    # 类型4: 从回复类型库中随机选择（避免重复）
+    reply_type_keys = list(APPEND_REPLY_TYPES.keys())
+    random.shuffle(reply_type_keys)
+    
+    for reply_type in reply_type_keys:
+        for reply in APPEND_REPLY_TYPES[reply_type]:
+            if not is_append_reply_recently_used(user_id, reply):
+                candidate_replies.append(reply)
+    
+    # 类型5: 通用回复（作为备选）
+    generic_replies = [
+        "对了，你最近有什么新的发现或者收获吗",
+        "话说，你最近在忙些什么有趣的事情",
+        "突然想问问，你那边一切都还好吗",
+        "最近有什么让你特别开心或者期待的事情吗",
     ]
+    candidate_replies.extend(generic_replies)
     
-    # 添加通用选项，但打乱顺序
-    random.shuffle(generic_options)
-    append_options.extend(generic_options)
+    # 5. 过滤和排序候选回复
+    filtered_replies = []
     
-    # 3. 过滤最近问过的话题
-    filtered_options = []
-    for option in append_options:
-        option_topic = extract_topic_from_question(option)
-        if not is_topic_recently_asked(user_id, option_topic):
-            filtered_options.append(option)
-    
-    # 如果没有合适的选项，使用原始选项
-    if not filtered_options:
-        filtered_options = append_options
-    
-    # 4. 随机选择一个
-    if filtered_options:
-        selected = random.choice(filtered_options)
+    for reply in candidate_replies:
+        # 检查是否最近使用过
+        if is_append_reply_recently_used(user_id, reply):
+            continue
         
-        # 记录这个话题
-        selected_topic = extract_topic_from_question(selected)
-        add_recent_topic(user_id, selected_topic)
+        # 检查是否与当前话题过于相似（避免重复）
+        reply_topic = extract_topic_from_question(reply)
+        if reply_topic == current_topic and random.random() < 0.3:
+            continue  # 30%概率跳过相同话题
+        
+        filtered_replies.append(reply)
+    
+    # 如果没有合适的回复，使用原始候选回复
+    if not filtered_replies:
+        filtered_replies = candidate_replies
+    
+    # 6. 随机选择一个（但偏向于前面更相关的回复）
+    if filtered_replies:
+        # 给前几个回复更高的权重
+        weights = [1.0 / (i + 1) for i in range(len(filtered_replies))]
+        total_weight = sum(weights)
+        normalized_weights = [w / total_weight for w in weights]
+        
+        selected = random.choices(filtered_replies, weights=normalized_weights, k=1)[0]
+        
+        # 记录到历史
+        add_append_reply_to_history(user_id, selected)
         
         return selected
     
@@ -504,46 +632,22 @@ def print_custom_log(user: User, chat_type: str, user_msg: str, bot_msg: str, de
     write_log(f"{user_name}(ID:{user_id}:{chat_type}):{user_msg}")
     write_log(f"bot({emotion}:{delay:.2f}秒:{reply_type}):{bot_msg}")
 
-# ====================== 自然记忆管理（像真人一样） ======================
+# ====================== 自然记忆管理 ======================
 def manage_user_memory_natural(user_id: int, user_input: str) -> Optional[str]:
-    """更自然的记忆管理，像真人一样记住和更新信息"""
-    
-    # 检测是否在谈论过去的记忆
-    past_patterns = [
-        r"我(以前|之前|原来|曾经).*(喜欢|讨厌|爱|不喜欢|不爱)",
-        r"(记得|想起|回忆起).*我(喜欢|讨厌|爱)",
-        r"其实我(一直|从来|都).*(喜欢|讨厌|爱)",
-        r"我(不是|不再是).*(喜欢|讨厌|爱).*了",
-        r"(改变|变化|变了).*(喜欢|讨厌|爱)"
-    ]
-    
-    # 检测是否在更新记忆
-    update_patterns = [
-        r"(现在|最近|这些天).*(喜欢|爱上|开始喜欢|开始爱)",
-        r"(不喜欢|不爱|讨厌).*了",
-        r"(其实|实际上).*(更喜欢|更爱)",
-        r"比起.*(我更喜欢|我更爱)",
-        r"(我的|我).*(变了|改变了|不同了)"
-    ]
-    
-    # 检查是否为记忆相关对话
     is_memory_related = False
     memory_keyword = None
     new_value = None
     
-    # 查找记忆关键词
     for keyword in MEMORY_KEYWORDS:
         if keyword in user_input:
             memory_keyword = keyword
             is_memory_related = True
             break
     
-    # 如果没有明显的关键词，检查是否有兴趣相关的词汇
     if not is_memory_related:
         interest_words = ["喜欢", "爱", "讨厌", "不喜欢", "爱好", "兴趣", "常去", "常看", "常听"]
         if any(word in user_input for word in interest_words):
             is_memory_related = True
-            # 尝试推断记忆关键词
             for keyword in MEMORY_KEYWORDS:
                 keyword_simple = keyword.replace("喜欢的", "").replace("的", "")
                 if keyword_simple in user_input and len(keyword_simple) > 1:
@@ -553,45 +657,33 @@ def manage_user_memory_natural(user_id: int, user_input: str) -> Optional[str]:
     if not is_memory_related:
         return None
     
-    # 加载现有记忆
     user_mem = load_user_interest_memory(user_id)
     
-    # 尝试提取新值
-    # 先尝试提取引号内的内容
     quote_match = re.search(r'["\'「」](.+?)["\'「」]', user_input)
     if quote_match:
         new_value = quote_match.group(1)
     else:
-        # 尝试提取"喜欢/爱/讨厌"后面的内容
         like_match = re.search(r'(喜欢|爱|讨厌|不喜欢|不爱)(.+?)(?=，|。|！|~|$)', user_input)
         if like_match:
             new_value = like_match.group(2).strip()
     
-    # 如果还是没有提取到，尝试提取句子后半部分
     if not new_value:
-        # 分割句子，取后半部分
         parts = re.split(r'(喜欢|爱|讨厌|不喜欢|不爱)', user_input, maxsplit=1)
         if len(parts) > 2:
             new_value = parts[2].strip()
-            # 清理标点
             new_value = re.sub(r'[，。！~？]$', '', new_value)
     
-    # 如果内存中已有此关键词
     if memory_keyword and memory_keyword in user_mem:
         old_value = user_mem[memory_keyword]
         
-        # 检查是否是更新（新旧值不同）
         if new_value and new_value != old_value:
-            # 像真人一样确认更新
             user_mem[memory_keyword] = new_value
             save_user_interest_memory(user_id, user_mem)
             
-            # 记录修改
             record = (time.strftime("%Y-%m-%d %H:%M:%S"), "自然更新", f"{memory_keyword}: {old_value} -> {new_value}")
             memory_modify_records.setdefault(user_id, []).append(record)
             save_memory_modify_records()
             
-            # 自然的回应
             responses = [
                 f"哦~ 原来你现在{memory_keyword.replace('的', '')}{new_value}了呀~ 我记住啦~",
                 f"好哒~ 更新一下我的小本本：{memory_keyword.replace('的', '')}{new_value}~",
@@ -600,7 +692,6 @@ def manage_user_memory_natural(user_id: int, user_input: str) -> Optional[str]:
             ]
             return random.choice(responses)
         else:
-            # 只是确认已有记忆
             responses = [
                 f"我记得呀~ 你{memory_keyword.replace('的', '')}{old_value}嘛~",
                 f"当然记得啦~ 你{memory_keyword.replace('的', '')}{old_value}~",
@@ -608,17 +699,14 @@ def manage_user_memory_natural(user_id: int, user_input: str) -> Optional[str]:
             ]
             return random.choice(responses)
     
-    # 如果是新记忆
     elif memory_keyword and new_value:
         user_mem[memory_keyword] = new_value
         save_user_interest_memory(user_id, user_mem)
         
-        # 记录
         record = (time.strftime("%Y-%m-%d %H:%M:%S"), "自然记忆", f"{memory_keyword}={new_value}")
         memory_modify_records.setdefault(user_id, []).append(record)
         save_memory_modify_records()
         
-        # 自然的回应
         responses = [
             f"好呀~ 我记住啦~ 你{memory_keyword.replace('的', '')}{new_value}~",
             f"了解~ {memory_keyword.replace('的', '')}{new_value}对吧~ 记在小本本上啦~",
@@ -630,28 +718,17 @@ def manage_user_memory_natural(user_id: int, user_input: str) -> Optional[str]:
     return None
 
 def extract_user_memory_natural(user_id: int, user_input: str):
-    """更自然的记忆提取"""
     user_mem = load_user_interest_memory(user_id)
     
-    # 按优先级处理不同的记忆类型
     memory_patterns = [
-        # 电影相关
         (r'(喜欢|爱看|常看|推荐).*?(电影|影片|片子)', '喜欢的电影'),
         (r'(最近|刚|看完).*?(电影|影片)', '最近看的电影'),
-        
-        # 音乐相关
         (r'(喜欢|爱听|常听).*?(歌|音乐|歌曲|歌手)', '喜欢的音乐'),
         (r'(最近|常听).*?(歌|音乐)', '最近听的音乐'),
-        
-        # 美食相关
         (r'(喜欢|爱吃|常吃).*?(吃|美食|食物|菜|餐厅)', '喜欢的美食'),
         (r'(常去|推荐).*?(餐厅|饭店|馆子)', '常去的餐厅'),
-        
-        # 兴趣相关
         (r'(爱好|兴趣|喜欢).*?(做|玩|干)', '爱好'),
         (r'(喜欢|爱玩).*?(游戏|手游|端游)', '喜欢的游戏'),
-        
-        # 日常相关
         (r'(通常|一般|常).*?(点睡觉|点起床)', '作息习惯'),
         (r'(每周|经常).*?(运动|锻炼|健身)', '运动习惯'),
     ]
@@ -659,16 +736,12 @@ def extract_user_memory_natural(user_id: int, user_input: str):
     for pattern, keyword in memory_patterns:
         match = re.search(pattern, user_input)
         if match:
-            # 提取具体内容
-            content_start = max(match.start(), match.end() - 20)  # 取匹配部分附近的文本
+            content_start = max(match.start(), match.end() - 20)
             content = user_input[content_start:content_start + 50]
-            
-            # 清理内容
             content = re.sub(r'[，。！~？]', '', content)
             content = content.strip()
             
             if content and len(content) > 2:
-                # 检查是否已存在相同或相似记忆
                 existing = user_mem.get(keyword, "")
                 if not existing or (content not in existing and existing not in content):
                     user_mem[keyword] = content
@@ -881,13 +954,14 @@ def clean_reply_text(text: str, is_append: bool = False) -> str:
         text = text[:cut_pos].strip()
     return text
 
-# ====================== 核心API调用（增强自然度） ======================
+# ====================== 核心API调用（强制格式"主‖副"） ======================
 def call_deepseek_api(
     user_id: int,
     user_input: str,
     user_mem: dict,
     emotion: Tuple[str, int],
-    relation: str
+    relation: str,
+    conversation_hist: List[Tuple[str, str]]  # 添加历史参数
 ) -> Tuple[str, Optional[str]]:
     emotion_type, emotion_intensity = emotion
     user_nickname = get_user_nickname(user_id)
@@ -896,11 +970,24 @@ def call_deepseek_api(
     rel_desc = BOT_PROFILE["relationship_desc"].get(str(user_id), final_relation) if user_id == 6795917907 else final_relation
     memory_text = "用户记忆：" + "；".join([f"{k}={v}" for k, v in user_mem.items()]) if user_mem else "暂无用户记忆"
     
-    # 添加最近话题信息，避免重复提问
+    # 添加最近话题信息
     recent_topic_info = ""
     if user_id in recent_topics and recent_topics[user_id]:
-        recent_topic_list = [topic for topic, _ in recent_topics[user_id][-3:]]  # 取最近3个话题
+        recent_topic_list = [topic for topic, _ in recent_topics[user_id][-3:]]
         recent_topic_info = f"最近聊过的话题：{'、'.join(recent_topic_list)}。避免重复这些话题。"
+    
+    # 添加历史对话摘要
+    history_summary = ""
+    if conversation_hist:
+        recent_history = conversation_hist[-3:]  # 最近3轮对话
+        history_lines = []
+        for u_msg, b_msg in recent_history:
+            # 清理历史中的追加标记
+            if " [追加: " in b_msg:
+                b_msg = b_msg.split(" [追加: ")[0]
+            history_lines.append(f"用户：{u_msg[:30]}{'...' if len(u_msg) > 30 else ''}")
+            history_lines.append(f"你：{b_msg[:30]}{'...' if len(b_msg) > 30 else ''}")
+        history_summary = "最近对话历史：\n" + "\n".join(history_lines)
     
     MAIN_SEPARATOR = "‖"
     
@@ -912,52 +999,54 @@ def call_deepseek_api(
 当前情绪：{emotion_type}（强度{emotion_intensity}）
 {recent_topic_info}
 
-【对话自然度要求】
-1. 像真人一样聊天：有连贯性、会自然转移话题、不会机械重复；
-2. 避免短时间内重复相同或类似的问题；
-3. 话题转移要自然：从一个话题转移到另一个话题要有过渡；
-4. 追加回复要与主回复紧密相关，自然延续话题；
-5. 记忆更新要自然：像真人一样记住和更新信息；
+{history_summary}
 
-【回复格式要求】
-你每次的回复必须严格分为两部分，用这个分隔符分开：{MAIN_SEPARATOR}
-格式：主回复{MAIN_SEPARATOR}追加回复
+【回复格式要求 - 必须严格遵守】
+你的回复必须严格按照以下格式，不能有任何偏差：
 
-【追加回复规则】
-1. 追加回复绝对不使用波浪号~、感叹号！等情绪符号；
-2. 追加回复必须紧密关联主回复，自然延续话题；
-3. 追加回复可以自然转移话题，但不能生硬跳跃；
-4. 追加回复字数不超过50字；
-5. 追加回复语气自然延续主回复，像对话的下半句；
+主回复‖追加回复
+
+重要说明：
+1. 必须使用"‖"符号作为分隔符
+2. 主回复部分：可以包含语气词，{GLOBAL_CONFIG['reply_max_length']}字以内
+3. 追加回复部分：
+   - 如果知道相关的、自然的追加回复，就写上
+   - 如果实在不知道说什么，就写"None"
+   - 绝对不能空着，必须要有内容（要么是追加回复，要么是"None"）
+
+【追加回复生成指南】
+1. 查看上面的对话历史，避免重复
+2. 基于用户记忆生成相关的追加回复
+3. 可以自然转移话题，但不能生硬
+4. 避免问"你今天过得怎么样"这种泛泛的问题
+5. 尽量让追加回复与当前对话或历史相关
 
 【示例】
 用户：今天天气真好
-谢灵黯：是呀~ 阳光明媚的天气让人心情都变好了呢~{MAIN_SEPARATOR}对了，你那边温度怎么样？
+谢灵黯：是呀~ 阳光明媚的天气让人心情都变好了呢~‖对了，你那边温度怎么样？
 
 用户：我刚看完那部新电影
-谢灵黯：哇~ 怎么样怎么样？好看吗？~{MAIN_SEPARATOR}上次你说喜欢的那个导演还有新作品呢
+谢灵黯：哇~ 怎么样怎么样？好看吗？~‖上次你说喜欢的那个导演还有新作品呢
 
 用户：最近工作好忙
-谢灵黯：辛苦啦~ 要注意休息哦~{MAIN_SEPARATOR}忙完这阵子有什么特别的计划吗
+谢灵黯：辛苦啦~ 要注意休息哦~‖忙完这阵子有什么特别的计划吗
 
 【特别强调】
 必须使用分隔符：{MAIN_SEPARATOR}
-追加回复要有意义，不能是"无"、"没有"等词语。"""
+追加回复部分不能为空，要么是相关内容，要么是"None"。
+如果你实在不知道说什么追加回复，就写"None"。"""
 
     messages = [{"role": "system", "content": system_prompt.strip()}]
     
-    history = conversation_history.get(user_id, [])
-    if history:
-        recent_history = history[-2:] if len(history) > 2 else history
+    # 添加历史对话（最多2轮）
+    if conversation_hist:
+        recent_history = conversation_hist[-2:] if len(conversation_hist) > 2 else conversation_hist
         for u_msg, b_msg in recent_history:
-            # 从历史中移除追加标记
+            # 清理历史中的追加标记
             if " [追加: " in b_msg:
-                main_part = b_msg.split(" [追加: ")[0]
-                messages.append({"role": "user", "content": u_msg})
-                messages.append({"role": "assistant", "content": main_part})
-            else:
-                messages.append({"role": "user", "content": u_msg})
-                messages.append({"role": "assistant", "content": b_msg})
+                b_msg = b_msg.split(" [追加: ")[0]
+            messages.append({"role": "user", "content": u_msg})
+            messages.append({"role": "assistant", "content": b_msg})
     
     messages.append({"role": "user", "content": user_input})
     
@@ -991,71 +1080,56 @@ def call_deepseek_api(
                 
                 write_log(f"API原始回复（用户{user_id}）: {raw_reply}", "DEBUG")
                 
-                # 解析回复
+                # 强制解析格式 "主回复‖追加回复"
                 main_reply_raw = ""
                 append_reply_raw = ""
-                found_separator = False
                 
-                # 检查主分隔符
+                # 查找分隔符
                 if MAIN_SEPARATOR in raw_reply:
                     parts = raw_reply.split(MAIN_SEPARATOR, 1)
                     if len(parts) == 2:
                         main_reply_raw = parts[0].strip()
                         append_reply_raw = parts[1].strip()
-                        found_separator = True
-                
-                # 如果没有找到，尝试其他分隔符
-                if not found_separator:
-                    alt_separators = ["追加回复：", "追加：", "[追加:", "(追加:", "追加回复:", "补充：", "补充:"]
-                    for sep in alt_separators:
-                        if sep in raw_reply:
-                            parts = raw_reply.split(sep, 1)
-                            if len(parts) == 2:
-                                main_reply_raw = parts[0].strip()
-                                append_reply_raw = parts[1].strip()
-                                found_separator = True
-                                break
-                
-                # 如果还是没有找到，检查括号格式
-                if not found_separator:
-                    bracket_patterns = [
-                        r"\[追加[:：]\s*(.+?)\]",
-                        r"\(追加[:：]\s*(.+?)\)",
-                        r"追加[:：]\s*(.+?)$"
+                        write_log(f"使用主分隔符解析成功", "DEBUG")
+                else:
+                    # 如果没有找到主分隔符，尝试其他格式
+                    alt_patterns = [
+                        r"主回复[:：]\s*(.+?)\s*追加回复[:：]\s*(.+)",
+                        r"(.+?)\s*追加回复[:：]\s*(.+)",
                     ]
                     
-                    for pattern in bracket_patterns:
-                        match = re.search(pattern, raw_reply, re.IGNORECASE)
+                    for pattern in alt_patterns:
+                        match = re.search(pattern, raw_reply, re.DOTALL)
                         if match:
-                            append_reply_raw = match.group(1).strip()
-                            main_reply_raw = re.sub(pattern, "", raw_reply).strip()
-                            found_separator = True
+                            main_reply_raw = match.group(1).strip()
+                            append_reply_raw = match.group(2).strip()
+                            write_log(f"使用备选模式解析成功", "DEBUG")
                             break
                 
-                if found_separator and main_reply_raw and append_reply_raw:
-                    # 清理主回复
-                    main_reply = clean_reply_text(add_emotion_intensity(
-                        main_reply_raw, emotion_type, emotion_intensity, is_append=False
-                    ))
-                    
-                    # 清理追加回复
-                    append_reply = append_reply_raw.strip()
-                    if append_reply and len(append_reply) > 0:
-                        append_reply = clean_reply_text(append_reply, is_append=True)
-                        if len(append_reply) > 3 and append_reply.lower() not in ["无", "没有", "none", "null", ""]:
-                            write_log(f"成功解析追加回复（用户{user_id}）: {append_reply[:50]}...", "INFO")
-                            return main_reply, append_reply
-                        else:
-                            write_log(f"追加回复内容无效（用户{user_id}）: {append_reply}", "WARN")
-                    else:
-                        write_log(f"追加回复为空（用户{user_id}）", "WARN")
+                # 如果还是没有解析成功，将整个回复作为主回复，追加回复为None
+                if not main_reply_raw:
+                    main_reply_raw = raw_reply.strip()
+                    append_reply_raw = "None"
+                    write_log(f"无法解析格式，将整个回复作为主回复，追加回复设为None", "WARN")
                 
-                # 如果解析失败或没有追加回复
-                write_log(f"无法解析追加回复，仅返回主回复（用户{user_id}）", "WARN")
+                # 清理主回复
                 main_reply = clean_reply_text(add_emotion_intensity(
-                    raw_reply.strip(), emotion_type, emotion_intensity, is_append=False
+                    main_reply_raw, emotion_type, emotion_intensity, is_append=False
                 ))
-                return main_reply, None
+                
+                # 处理追加回复
+                append_reply = None
+                if append_reply_raw and append_reply_raw.lower() != "none" and len(append_reply_raw.strip()) > 0:
+                    append_reply = clean_reply_text(append_reply_raw.strip(), is_append=True)
+                    
+                    # 检查追加回复是否有效
+                    if len(append_reply) < 3 or append_reply.lower() in ["", "无", "没有"]:
+                        write_log(f"追加回复内容无效，设为None（用户{user_id}）", "WARN")
+                        append_reply = None
+                    else:
+                        write_log(f"成功解析追加回复（用户{user_id}）: {append_reply[:50]}...", "INFO")
+                
+                return main_reply, append_reply
                     
             else:
                 error_msg = response.text[:200] if response.text else "无错误详情"
@@ -1080,22 +1154,28 @@ def get_main_and_append_reply(
     user_input: str,
     user_mem: dict,
     emotion: Tuple[str, int],
-    relation: str
+    relation: str,
+    conversation_hist: List[Tuple[str, str]]  # 添加历史参数
 ) -> Tuple[str, Optional[str], float, float]:
     main_delay = round(random.uniform(*GLOBAL_CONFIG["typing_delay_range"]), 1)
     append_delay = round(random.uniform(*GLOBAL_CONFIG["append_reply_delay_range"]), 1)
     
     try:
+        # 调用API，传入历史对话
         main_reply, append_reply = call_deepseek_api(
-            user_id, user_input, user_mem, emotion, relation
+            user_id, user_input, user_mem, emotion, relation, conversation_hist
         )
         
-        # 如果API没有返回追加回复，生成自然的追加回复
+        # 如果API返回的追加回复为None，但有需要，生成智能追加回复
         if not append_reply and random.random() < GLOBAL_CONFIG["append_reply_probability"]:
-            append_reply = generate_natural_append_reply(user_id, user_input, main_reply, user_mem)
+            append_reply = generate_intelligent_append_reply(
+                user_id, user_input, main_reply, user_mem, conversation_hist
+            )
             
             if append_reply:
-                write_log(f"生成自然追加回复（用户{user_id}）: {append_reply}", "DEBUG")
+                write_log(f"生成智能追加回复（用户{user_id}）: {append_reply}", "DEBUG")
+                # 记录到历史
+                add_append_reply_to_history(user_id, append_reply)
         
     except Exception as e:
         write_log(f"获取回复失败（用户{user_id}）: {str(e)}", "ERROR")
@@ -1106,7 +1186,7 @@ def get_main_and_append_reply(
 
 # ====================== 数据加载/保存 ======================
 def load_all_data():
-    global user_blacklist, conversation_history, permanent_relations, memory_modify_records, recent_topics
+    global user_blacklist, conversation_history, permanent_relations, memory_modify_records, recent_topics, append_reply_history
     try:
         with open(CONVERSATION_HISTORY_FILE, "r", encoding="utf-8") as f:
             raw_history = json.load(f)
@@ -1151,6 +1231,23 @@ def load_all_data():
         write_log("最近话题记录加载成功")
     except Exception as e:
         write_log(f"加载最近话题记录失败: {str(e)}", "ERROR")
+    
+    # 加载追加回复历史
+    try:
+        with open(APPEND_REPLY_HISTORY_FILE, "r", encoding="utf-8") as f:
+            all_history = json.load(f)
+        for uid, history_list in all_history.items():
+            parsed_history = []
+            for reply, time_str in history_list:
+                try:
+                    parsed_time = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
+                    parsed_history.append((reply, parsed_time))
+                except:
+                    pass
+            append_reply_history[int(uid)] = parsed_history
+        write_log("追加回复历史加载成功")
+    except Exception as e:
+        write_log(f"加载追加回复历史失败: {str(e)}", "ERROR")
 
 def save_conversation_history():
     try:
@@ -1236,6 +1333,9 @@ def process_message_in_thread(update: Update, context: CallbackContext):
         emotion = get_current_emotion(user_id, user_input)
         emotion_str = f"{emotion[0]}（强度{emotion[1]}）"
         
+        # 获取当前用户的对话历史
+        user_history = conversation_history.get(user_id, [])
+        
         try:
             context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
         except Exception as e:
@@ -1243,8 +1343,9 @@ def process_message_in_thread(update: Update, context: CallbackContext):
         
         time.sleep(0.5)
         
+        # 获取主回复和追加回复，传入历史对话
         main_reply, append_reply, main_delay, append_delay = get_main_and_append_reply(
-            user_id, user_input, user_mem, emotion, relation
+            user_id, user_input, user_mem, emotion, relation, user_history
         )
         
         time.sleep(main_delay)
@@ -1382,13 +1483,14 @@ def main():
     load_all_data()
     write_log("Bot启动，所有数据加载完成", "INFO")
     print(f"\n{'='*60}")
-    print(f"Bot [{BOT_PROFILE['name']}] 启动成功 - 增强自然度版本")
+    print(f"Bot [{BOT_PROFILE['name']}] 启动成功 - 版本1.11.0")
     print(f"数据存储目录: {BOT_DATA_DIR}")
-    print(f"自然对话优化：话题追踪、避免重复、自然记忆管理")
-    print(f"话题冷却时间: {GLOBAL_CONFIG['topic_cooldown_minutes']}分钟")
-    print(f"记忆关键词：{len(MEMORY_KEYWORDS)}个")
+    print(f"对话优化：强制API返回'主‖副'格式，智能追加回复生成")
+    print(f"追加回复概率: {GLOBAL_CONFIG['append_reply_probability'] * 100}%")
+    print(f"追加回复类型库: {len(APPEND_REPLY_TYPES)}类{sum(len(v) for v in APPEND_REPLY_TYPES.values())}条")
     print(f"用户关系系统：已加载{len(permanent_relations)}个永久关系")
     print(f"最近话题记录：{sum(len(v) for v in recent_topics.values())}条")
+    print(f"追加回复历史：{sum(len(v) for v in append_reply_history.values())}条")
     print(f"{'='*60}\n")
     
     updater = Updater(
