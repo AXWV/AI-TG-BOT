@@ -1,3 +1,8 @@
+import sys, types
+if 'imghdr' not in sys.modules:
+    fake = types.ModuleType('imghdr')
+    fake.what = lambda file, h=None: None
+    sys.modules['imghdr'] = fake
 import json
 import os
 import random
@@ -65,6 +70,9 @@ GLOBAL_CONFIG = {
     "topic_cooldown_minutes": 30,
     "max_recent_topics": 10,
     "max_append_reply_history": 5,  # 最近追加回复记录数
+    "time_awareness_enabled": True,  # 时间观念功能开关
+    "natural_memory_recall_probability": 0.3,  # 自然回忆概率
+    "max_time_gap_hours": 48,  # 最大时间间隔（小时）
 }
 
 # 谢灵黯人设配置
@@ -86,6 +94,12 @@ BOT_PROFILE = {
 5. 群聊仅被@或提及名字时才回复，私聊正常回复；
 6. 会自然记住用户的兴趣爱好、喜欢的影视音乐等信息，并融入后续对话；
 7. 像真人一样聊天：有连贯性、会自然转移话题、不会机械重复；
+
+【时间观念】
+1. 你有时间观念，知道当前时间，能感知时间流逝；
+2. 会根据时间自然问候（早上好、中午好、晚上好）；
+3. 会注意到距离上次聊天的时间间隔，并自然地提到；
+4. 会根据时间自然地结束对话或表达期待；
 
 【对话自然度要求】
 1. 避免机械重复：相同或类似的问题不要短时间内反复问；
@@ -182,7 +196,7 @@ TOPIC_KEYWORDS = {
     "未来计划": ["计划", "打算", "未来", "明年", "下次", "以后", "期待", "希望"]
 }
 
-# 追加回复类型库（避免重复）
+# 追加回复类型库（避免重复）- 减少开放式提问
 APPEND_REPLY_TYPES = {
     "follow_up": [  # 跟进型
         "对了，你之前说的那件事后来怎么样了",
@@ -202,11 +216,10 @@ APPEND_REPLY_TYPES = {
         "这个话题挺有意思的，你平时还关注什么相关的",
         "这个让我想到了另一个相关的事情",
     ],
-    "care_question": [  # 关心型
+    "care_question": [  # 关心型 - 减少开放式提问
         "话说，你最近一切都还好吗",
         "对了，你最近有没有什么特别的事情发生",
         "突然想问问，你最近怎么样呀",
-        "最近有什么让你特别开心的事情吗",
     ],
     "future_oriented": [  # 未来导向型
         "你之后有什么特别的计划吗",
@@ -214,6 +227,30 @@ APPEND_REPLY_TYPES = {
         "对于这个，你接下来有什么想法",
         "你期待以后会有什么变化吗",
     ]
+}
+
+# 时间感知问候语
+TIME_AWARE_GREETINGS = {
+    "morning": ["早上好呀", "早安", "新的一天开始啦"],
+    "noon": ["中午好", "午安", "午饭时间到啦"],
+    "afternoon": ["下午好", "下午时光"],
+    "evening": ["晚上好", "晚上好呀", "晚上好哦"],
+    "night": ["晚上好", "该休息啦", "夜深了呢"],
+    "long_time": [
+        "好久不见呀",
+        "有一阵子没聊了呢",
+        "哇，距离上次聊天有好一会儿了",
+        "感觉有一段时间没和你聊天了"
+    ]
+}
+
+# 智能回忆关键词
+INTELLIGENT_MEMORY_KEYWORDS = {
+    "preference": ["喜欢", "爱", "讨厌", "不喜欢", "最爱", "偏好", "习惯"],
+    "experience": ["看过", "听过", "玩过", "去过", "吃过", "做过", "体验过"],
+    "plan": ["计划", "打算", "想要", "准备", "期待", "希望"],
+    "emotion": ["开心", "难过", "生气", "兴奋", "担心", "害怕", "惊讶"],
+    "daily": ["今天", "昨天", "最近", "上周", "上个月", "之前"]
 }
 
 # 配置文件路径
@@ -241,15 +278,17 @@ SYSTEM_STATUS_FILE = os.path.join(LOG_DIR, "system_status.log")
 MEMORY_MODIFY_RECORD_FILE = os.path.join(HISTORY_DIR, "memory_modify_records.json")
 RECENT_TOPICS_FILE = os.path.join(HISTORY_DIR, "recent_topics.json")
 APPEND_REPLY_HISTORY_FILE = os.path.join(HISTORY_DIR, "append_reply_history.json")
+USER_LAST_ACTIVITY_FILE = os.path.join(HISTORY_DIR, "user_last_activity.json")  # 新增：用户最后活动时间
 
 # ====================== 全局存储 ======================
-conversation_history: Dict[int, List[Tuple[str, str]]] = {}
+conversation_history: Dict[int, List[Tuple[str, str, datetime]]] = {}  # 修改：增加时间戳
 permanent_relations: Dict[int, str] = {}
 user_emotion_state: Dict[int, Tuple[str, int]] = {}
 user_blacklist: List[int] = []
 memory_modify_records: Dict[int, List[Tuple[str, str, str]]] = {}
 recent_topics: Dict[int, List[Tuple[str, datetime]]] = {}
 append_reply_history: Dict[int, List[Tuple[str, datetime]]] = {}  # 最近追加回复记录
+user_last_activity: Dict[int, datetime] = {}  # 新增：用户最后活动时间
 rate_limit_counter: List[float] = []
 last_backup_time: datetime = datetime.min
 last_keep_alive_time: datetime = datetime.now()
@@ -283,10 +322,138 @@ def init_all_files():
     MEMORY_KEYWORDS = load_config_file(CONFIG_FILES["memory_keywords"], DEFAULT_MEMORY_KEYWORDS)
     
     for file_path in [USER_MEMORY_FILE, CONVERSATION_HISTORY_FILE, PERMANENT_RELATION_FILE, 
-                      BLACKLIST_FILE, MEMORY_MODIFY_RECORD_FILE, RECENT_TOPICS_FILE, APPEND_REPLY_HISTORY_FILE]:
+                      BLACKLIST_FILE, MEMORY_MODIFY_RECORD_FILE, RECENT_TOPICS_FILE, APPEND_REPLY_HISTORY_FILE,
+                      USER_LAST_ACTIVITY_FILE]:  # 新增文件
         if not os.path.exists(file_path):
             with open(file_path, "w", encoding="utf-8") as f:
                 json.dump({}, f, ensure_ascii=False, indent=2)
+
+# ====================== 时间感知功能 ======================
+def get_time_based_greeting() -> str:
+    """根据当前时间返回合适的问候语"""
+    hour = datetime.now().hour
+    
+    if 5 <= hour < 10:
+        return random.choice(TIME_AWARE_GREETINGS["morning"])
+    elif 10 <= hour < 13:
+        return random.choice(TIME_AWARE_GREETINGS["noon"])
+    elif 13 <= hour < 17:
+        return random.choice(TIME_AWARE_GREETINGS["afternoon"])
+    elif 17 <= hour < 22:
+        return random.choice(TIME_AWARE_GREETINGS["evening"])
+    else:
+        return random.choice(TIME_AWARE_GREETINGS["night"])
+
+def get_time_since_last_chat(user_id: int) -> Optional[Tuple[str, float]]:
+    """获取距离上次聊天的时间"""
+    if user_id in user_last_activity:
+        last_time = user_last_activity[user_id]
+        time_diff = datetime.now() - last_time
+        
+        # 转换为小时
+        hours_diff = time_diff.total_seconds() / 3600
+        
+        if hours_diff > 24:
+            days = int(hours_diff / 24)
+            return f"{days}天", hours_diff
+        elif hours_diff > 1:
+            return f"{int(hours_diff)}小时", hours_diff
+        elif hours_diff > 0.1:  # 6分钟以上
+            minutes = int(hours_diff * 60)
+            return f"{minutes}分钟", hours_diff
+    
+    return None
+
+def update_user_last_activity(user_id: int):
+    """更新用户最后活动时间"""
+    user_last_activity[user_id] = datetime.now()
+    save_user_last_activity()
+
+def load_user_last_activity():
+    """加载用户最后活动时间"""
+    global user_last_activity
+    try:
+        with open(USER_LAST_ACTIVITY_FILE, "r", encoding="utf-8") as f:
+            raw_data = json.load(f)
+        for uid_str, time_str in raw_data.items():
+            try:
+                user_last_activity[int(uid_str)] = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
+            except:
+                pass
+    except Exception as e:
+        write_log(f"加载用户最后活动时间失败: {str(e)}", "ERROR")
+
+def save_user_last_activity():
+    """保存用户最后活动时间"""
+    try:
+        data_to_save = {}
+        for uid, time_obj in user_last_activity.items():
+            data_to_save[str(uid)] = time_obj.strftime("%Y-%m-%d %H:%M:%S")
+        
+        with open(USER_LAST_ACTIVITY_FILE, "w", encoding="utf-8") as f:
+            json.dump(data_to_save, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        write_log(f"保存用户最后活动时间失败: {str(e)}", "ERROR")
+
+def should_mention_time_gap(user_id: int) -> bool:
+    """判断是否应该提及时间间隔"""
+    time_info = get_time_since_last_chat(user_id)
+    if time_info:
+        _, hours_diff = time_info
+        # 超过一定时间才提及
+        return hours_diff > 6  # 6小时以上
+    return False
+
+# ====================== 智能回忆功能 ======================
+def intelligent_memory_recall(user_id: int, user_input: str, user_mem: dict) -> Optional[str]:
+    """智能回忆功能，更自然地关联用户记忆"""
+    if not user_mem or random.random() > GLOBAL_CONFIG["natural_memory_recall_probability"]:
+        return None
+    
+    # 分析用户输入的关键词
+    input_lower = user_input.lower()
+    
+    # 查找相关的记忆项
+    related_memories = []
+    
+    for key, value in user_mem.items():
+        # 检查记忆关键词是否与输入相关
+        if any(word in key.lower() for word in INTELLIGENT_MEMORY_KEYWORDS["preference"]):
+            # 检查输入是否涉及喜好
+            if any(word in input_lower for word in ["喜欢", "爱", "讨厌", "不喜欢"]):
+                if len(value) < 20:  # 避免太长的记忆
+                    related_memories.append((key, value))
+        
+        # 检查经验相关
+        elif any(word in key.lower() for word in INTELLIGENT_MEMORY_KEYWORDS["experience"]):
+            if any(word in input_lower for word in ["看过", "听过", "玩过", "去过", "做过"]):
+                if len(value) < 20:
+                    related_memories.append((key, value))
+    
+    if not related_memories:
+        return None
+    
+    # 随机选择一个相关记忆
+    key, value = random.choice(related_memories)
+    
+    # 生成自然的回忆表达
+    recall_patterns = [
+        f"说到这个，我记得你好像{key}{value}？",
+        f"让我想想...你之前是不是说过{key}{value}来着？",
+        f"这个让我想起你之前提到的{key}{value}",
+        f"我记得你{key}{value}，对吧？",
+    ]
+    
+    # 根据时间间隔调整回忆语气
+    time_info = get_time_since_last_chat(user_id)
+    if time_info and time_info[1] > 24:  # 超过24小时
+        recall_patterns = [
+            f"话说回来，你之前好像说过{key}{value}，现在还是这样吗？",
+            f"我记得我们上次聊天时你说过{key}{value}，不知道现在有没有变化呢？",
+            f"如果我没记错的话，你{key}{value}，现在还是这样吗？",
+        ]
+    
+    return random.choice(recall_patterns)
 
 # ====================== 追加回复历史管理 ======================
 def load_append_reply_history(user_id: int) -> List[Tuple[str, datetime]]:
@@ -446,7 +613,7 @@ def extract_topic_from_question(question: str) -> str:
     return question
 
 # ====================== 智能追加回复生成（改进版） ======================
-def generate_intelligent_append_reply(user_id: int, user_input: str, main_reply: str, user_mem: dict, conversation_hist: List[Tuple[str, str]]) -> Optional[str]:
+def generate_intelligent_append_reply(user_id: int, user_input: str, main_reply: str, user_mem: dict, conversation_hist: List[Tuple[str, str, datetime]]) -> Optional[str]:
     """生成智能的追加回复，利用历史对话避免重复"""
     
     # 1. 分析当前对话上下文
@@ -456,20 +623,18 @@ def generate_intelligent_append_reply(user_id: int, user_input: str, main_reply:
     # 2. 获取用户历史对话（最近的3-5轮）
     recent_conversations = conversation_hist[-5:] if len(conversation_hist) > 5 else conversation_hist
     
-    # 3. 分析历史对话中的话题
-    historical_topics = []
-    for user_msg, bot_msg in recent_conversations:
-        if user_msg:
-            historical_topics.append(extract_topic_from_question(user_msg))
+    # 3. 检查是否需要根据时间间隔调整回复
+    time_gap_mentioned = False
+    time_info = get_time_since_last_chat(user_id)
     
     # 4. 根据用户记忆生成候选回复
     candidate_replies = []
     
-    # 类型1: 基于历史对话的跟进
+    # 类型1: 基于历史对话的跟进（优先）
     if len(recent_conversations) > 1:
         # 检查3轮前的对话，看看有没有可以跟进的话题
         for i in range(min(3, len(recent_conversations) - 1)):
-            old_user_msg, old_bot_msg = recent_conversations[-(i+2)]
+            old_user_msg, old_bot_msg, old_time = recent_conversations[-(i+2)]
             if old_user_msg and len(old_user_msg) > 10:
                 # 提取旧话题的关键词
                 words = old_user_msg.split()
@@ -510,12 +675,24 @@ def generate_intelligent_append_reply(user_id: int, user_input: str, main_reply:
             if not is_append_reply_recently_used(user_id, reply):
                 candidate_replies.append(reply)
     
-    # 类型5: 通用回复（作为备选）
+    # 类型5: 根据时间间隔生成回复
+    if time_info and time_info[1] > 12:  # 超过12小时
+        time_gap_text, hours_diff = time_info
+        if hours_diff > 48:  # 超过2天
+            candidate_replies.extend([
+                f"这么久没聊，最近发生什么有趣的事了吗",
+                f"有一段时间没聊天了，你最近怎么样呀",
+            ])
+        elif hours_diff > 24:  # 超过1天
+            candidate_replies.extend([
+                f"昨天你那边怎么样呀",
+                f"一天不见，有什么新鲜事吗",
+            ])
+    
+    # 类型6: 通用回复（作为备选）- 减少开放式提问
     generic_replies = [
         "对了，你最近有什么新的发现或者收获吗",
         "话说，你最近在忙些什么有趣的事情",
-        "突然想问问，你那边一切都还好吗",
-        "最近有什么让你特别开心或者期待的事情吗",
     ]
     candidate_replies.extend(generic_replies)
     
@@ -692,6 +869,11 @@ def manage_user_memory_natural(user_id: int, user_input: str) -> Optional[str]:
             ]
             return random.choice(responses)
         else:
+            # 智能回忆触发
+            recall_response = intelligent_memory_recall(user_id, user_input, user_mem)
+            if recall_response and random.random() < 0.5:
+                return recall_response
+            
             responses = [
                 f"我记得呀~ 你{memory_keyword.replace('的', '')}{old_value}嘛~",
                 f"当然记得啦~ 你{memory_keyword.replace('的', '')}{old_value}~",
@@ -961,7 +1143,7 @@ def call_deepseek_api(
     user_mem: dict,
     emotion: Tuple[str, int],
     relation: str,
-    conversation_hist: List[Tuple[str, str]]  # 添加历史参数
+    conversation_hist: List[Tuple[str, str, datetime]]  # 修改：增加时间戳
 ) -> Tuple[str, Optional[str]]:
     emotion_type, emotion_intensity = emotion
     user_nickname = get_user_nickname(user_id)
@@ -970,23 +1152,48 @@ def call_deepseek_api(
     rel_desc = BOT_PROFILE["relationship_desc"].get(str(user_id), final_relation) if user_id == 6795917907 else final_relation
     memory_text = "用户记忆：" + "；".join([f"{k}={v}" for k, v in user_mem.items()]) if user_mem else "暂无用户记忆"
     
+    # 添加时间信息
+    current_time = datetime.now()
+    time_str = current_time.strftime("%Y年%m月%d日 %H:%M")
+    hour = current_time.hour
+    time_greeting = get_time_based_greeting()
+    
+    # 添加时间间隔信息
+    time_gap_info = ""
+    if GLOBAL_CONFIG["time_awareness_enabled"]:
+        time_gap = get_time_since_last_chat(user_id)
+        if time_gap and time_gap[1] > 6:  # 超过6小时
+            time_gap_info = f"距离上次聊天已经过去了{time_gap[0]}。"
+    
     # 添加最近话题信息
     recent_topic_info = ""
     if user_id in recent_topics and recent_topics[user_id]:
         recent_topic_list = [topic for topic, _ in recent_topics[user_id][-3:]]
         recent_topic_info = f"最近聊过的话题：{'、'.join(recent_topic_list)}。避免重复这些话题。"
     
-    # 添加历史对话摘要
+    # 添加历史对话摘要（带时间信息）
     history_summary = ""
     if conversation_hist:
         recent_history = conversation_hist[-3:]  # 最近3轮对话
         history_lines = []
-        for u_msg, b_msg in recent_history:
+        for u_msg, b_msg, hist_time in recent_history:
             # 清理历史中的追加标记
             if " [追加: " in b_msg:
                 b_msg = b_msg.split(" [追加: ")[0]
-            history_lines.append(f"用户：{u_msg[:30]}{'...' if len(u_msg) > 30 else ''}")
-            history_lines.append(f"你：{b_msg[:30]}{'...' if len(b_msg) > 30 else ''}")
+            
+            # 计算距离现在的时间
+            time_diff = current_time - hist_time
+            if time_diff.days > 0:
+                time_ago = f"{time_diff.days}天前"
+            elif time_diff.seconds > 3600:
+                time_ago = f"{time_diff.seconds // 3600}小时前"
+            elif time_diff.seconds > 60:
+                time_ago = f"{time_diff.seconds // 60}分钟前"
+            else:
+                time_ago = "刚才"
+            
+            history_lines.append(f"[{time_ago}] 用户：{u_msg[:30]}{'...' if len(u_msg) > 30 else ''}")
+            history_lines.append(f"[{time_ago}] 你：{b_msg[:30]}{'...' if len(b_msg) > 30 else ''}")
         history_summary = "最近对话历史：\n" + "\n".join(history_lines)
     
     MAIN_SEPARATOR = "‖"
@@ -994,12 +1201,21 @@ def call_deepseek_api(
     system_prompt = f"""你是谢灵黯（灵黯），一个15岁的活泼开朗学生，擅长线上聊天。
 
 【当前对话信息】
+当前时间：{time_str}（{time_greeting}）
 用户关系：{rel_desc}（{rel_template}）
 用户记忆：{memory_text}
 当前情绪：{emotion_type}（强度{emotion_intensity}）
+{time_gap_info}
+
 {recent_topic_info}
 
 {history_summary}
+
+【时间观念要求】
+1. 根据当前时间({hour}点)使用合适的问候语和语气；
+2. 如果距离上次聊天时间较长，可以自然地提及；
+3. 像真人一样有时间感知，不会在深夜过度兴奋；
+4. 根据时间自然地表达关心或结束对话。
 
 【回复格式要求 - 必须严格遵守】
 你的回复必须严格按照以下格式，不能有任何偏差：
@@ -1018,12 +1234,19 @@ def call_deepseek_api(
 1. 查看上面的对话历史，避免重复
 2. 基于用户记忆生成相关的追加回复
 3. 可以自然转移话题，但不能生硬
-4. 避免问"你今天过得怎么样"这种泛泛的问题
+4. 避免开放式提问（如"你今天过得怎么样"），要具体
 5. 尽量让追加回复与当前对话或历史相关
+6. 不要主动找话题，而是基于用户输入自然延伸
+
+【智能回忆指南】
+1. 当用户提到相关话题时，自然地提及之前的记忆
+2. 回忆要自然，不要机械重复
+3. 如果记忆可能有变化，可以用询问的方式确认
+4. 像真人一样回忆，有不确定的感觉
 
 【示例】
 用户：今天天气真好
-谢灵黯：是呀~ 阳光明媚的天气让人心情都变好了呢~‖对了，你那边温度怎么样？
+谢灵黯：是呀~ {time_greeting}~ 阳光明媚的天气让人心情都变好了呢~‖对了，你那边温度怎么样？
 
 用户：我刚看完那部新电影
 谢灵黯：哇~ 怎么样怎么样？好看吗？~‖上次你说喜欢的那个导演还有新作品呢
@@ -1034,14 +1257,15 @@ def call_deepseek_api(
 【特别强调】
 必须使用分隔符：{MAIN_SEPARATOR}
 追加回复部分不能为空，要么是相关内容，要么是"None"。
-如果你实在不知道说什么追加回复，就写"None"。"""
+如果你实在不知道说什么追加回复，就写"None"。
+避免主动找话题，基于用户输入自然回应。"""
 
     messages = [{"role": "system", "content": system_prompt.strip()}]
     
     # 添加历史对话（最多2轮）
     if conversation_hist:
         recent_history = conversation_hist[-2:] if len(conversation_hist) > 2 else conversation_hist
-        for u_msg, b_msg in recent_history:
+        for u_msg, b_msg, _ in recent_history:
             # 清理历史中的追加标记
             if " [追加: " in b_msg:
                 b_msg = b_msg.split(" [追加: ")[0]
@@ -1155,7 +1379,7 @@ def get_main_and_append_reply(
     user_mem: dict,
     emotion: Tuple[str, int],
     relation: str,
-    conversation_hist: List[Tuple[str, str]]  # 添加历史参数
+    conversation_hist: List[Tuple[str, str, datetime]]  # 修改：增加时间戳
 ) -> Tuple[str, Optional[str], float, float]:
     main_delay = round(random.uniform(*GLOBAL_CONFIG["typing_delay_range"]), 1)
     append_delay = round(random.uniform(*GLOBAL_CONFIG["append_reply_delay_range"]), 1)
@@ -1190,7 +1414,23 @@ def load_all_data():
     try:
         with open(CONVERSATION_HISTORY_FILE, "r", encoding="utf-8") as f:
             raw_history = json.load(f)
-            conversation_history.update({int(uid): hist for uid, hist in raw_history.items()})
+            # 修改：加载带时间戳的对话历史
+            conversation_history.clear()
+            for uid_str, hist_list in raw_history.items():
+                uid = int(uid_str)
+                conversation_history[uid] = []
+                for item in hist_list:
+                    if len(item) == 3:  # 新格式：用户消息，机器人消息，时间戳
+                        user_msg, bot_msg, time_str = item
+                        try:
+                            time_obj = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
+                            conversation_history[uid].append((user_msg, bot_msg, time_obj))
+                        except:
+                            # 如果时间解析失败，使用当前时间
+                            conversation_history[uid].append((user_msg, bot_msg, datetime.now()))
+                    elif len(item) == 2:  # 旧格式：只有消息，没有时间戳
+                        user_msg, bot_msg = item
+                        conversation_history[uid].append((user_msg, bot_msg, datetime.now()))
         write_log("对话历史加载成功")
     except Exception as e:
         write_log(f"加载对话历史失败: {str(e)}", "ERROR")
@@ -1248,11 +1488,21 @@ def load_all_data():
         write_log("追加回复历史加载成功")
     except Exception as e:
         write_log(f"加载追加回复历史失败: {str(e)}", "ERROR")
+    
+    # 加载用户最后活动时间
+    load_user_last_activity()
 
 def save_conversation_history():
     try:
+        data_to_save = {}
+        for uid, hist_list in conversation_history.items():
+            serialized_list = []
+            for user_msg, bot_msg, time_obj in hist_list:
+                serialized_list.append([user_msg, bot_msg, time_obj.strftime("%Y-%m-%d %H:%M:%S")])
+            data_to_save[str(uid)] = serialized_list
+        
         with open(CONVERSATION_HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(conversation_history, f, ensure_ascii=False, indent=2)
+            json.dump(data_to_save, f, ensure_ascii=False, indent=2)
     except Exception as e:
         write_log(f"保存对话历史失败: {str(e)}", "ERROR")
 
@@ -1313,6 +1563,9 @@ def process_message_in_thread(update: Update, context: CallbackContext):
             write_log(f"[{chat_type}] 用户{user_id}消息无需回复: {user_input[:30]}...", "DEBUG")
             return
         
+        # 更新用户最后活动时间
+        update_user_last_activity(user_id)
+        
         # 使用自然的记忆管理
         memory_manage_reply = manage_user_memory_natural(user_id, user_input)
         if memory_manage_reply:
@@ -1333,7 +1586,7 @@ def process_message_in_thread(update: Update, context: CallbackContext):
         emotion = get_current_emotion(user_id, user_input)
         emotion_str = f"{emotion[0]}（强度{emotion[1]}）"
         
-        # 获取当前用户的对话历史
+        # 获取当前用户的对话历史（带时间戳）
         user_history = conversation_history.get(user_id, [])
         
         try:
@@ -1351,10 +1604,11 @@ def process_message_in_thread(update: Update, context: CallbackContext):
         time.sleep(main_delay)
         update.message.reply_text(main_reply)
         
+        current_time = datetime.now()
         with THREAD_LOCK:
             if user_id not in conversation_history:
                 conversation_history[user_id] = []
-            conversation_history[user_id].append((user_input, main_reply))
+            conversation_history[user_id].append((user_input, main_reply, current_time))
             if len(conversation_history[user_id]) > GLOBAL_CONFIG["max_history_rounds"]:
                 conversation_history[user_id].pop(0)
         
@@ -1362,7 +1616,7 @@ def process_message_in_thread(update: Update, context: CallbackContext):
         save_user_global_memory(
             user_id,
             {
-                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "time": current_time.strftime("%Y-%m-%d %H:%M:%S"),
                 "user_msg": user_input,
                 "bot_msg": main_reply,
                 "emotion": emotion[0]
@@ -1393,7 +1647,8 @@ def process_message_in_thread(update: Update, context: CallbackContext):
             
             with THREAD_LOCK:
                 if user_id in conversation_history:
-                    conversation_history[user_id][-1] = (user_input, f"{main_reply} [追加: {append_reply}]")
+                    # 更新最后一条记录
+                    conversation_history[user_id][-1] = (user_input, f"{main_reply} [追加: {append_reply}]", current_time)
                     if len(conversation_history[user_id]) > GLOBAL_CONFIG["max_history_rounds"]:
                         conversation_history[user_id].pop(0)
             
@@ -1401,7 +1656,7 @@ def process_message_in_thread(update: Update, context: CallbackContext):
             save_user_global_memory(
                 user_id,
                 {
-                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "time": current_time.strftime("%Y-%m-%d %H:%M:%S"),
                     "user_msg": user_input,
                     "bot_msg": f"{main_reply} [追加: {append_reply}]",
                     "emotion": emotion[0]
@@ -1472,8 +1727,23 @@ def handle_message(update: Update, context: CallbackContext):
 # ====================== 启动命令处理 ======================
 def start(update: Update, context: CallbackContext):
     try:
-        update.message.reply_text("你好呀，我是灵黯~ 很高兴认识你！")
-        write_log(f"用户{update.effective_user.id}发送/start命令", "INFO")
+        user_id = update.effective_user.id
+        
+        # 获取时间问候
+        greeting = get_time_based_greeting()
+        
+        # 检查距离上次聊天的时间
+        time_info = get_time_since_last_chat(user_id)
+        if time_info and time_info[1] > 12:
+            time_gap_text, _ = time_info
+            update.message.reply_text(f"{greeting}呀~ 距离上次聊天有{time_gap_text}了呢~ 很高兴又见到你！")
+        else:
+            update.message.reply_text(f"{greeting}，我是灵黯~ 很高兴认识你！")
+        
+        # 更新最后活动时间
+        update_user_last_activity(user_id)
+        
+        write_log(f"用户{user_id}发送/start命令", "INFO")
     except Exception as e:
         write_log(f"启动回复失败: {str(e)}", "ERROR")
 
@@ -1485,12 +1755,14 @@ def main():
     print(f"\n{'='*60}")
     print(f"Bot [{BOT_PROFILE['name']}] 启动成功 - 版本1.11.0")
     print(f"数据存储目录: {BOT_DATA_DIR}")
-    print(f"对话优化：强制API返回'主‖副'格式，智能追加回复生成")
-    print(f"追加回复概率: {GLOBAL_CONFIG['append_reply_probability'] * 100}%")
+    print(f"新增功能：时间观念系统、智能回忆功能")
+    print(f"时间感知: {'开启' if GLOBAL_CONFIG['time_awareness_enabled'] else '关闭'}")
+    print(f"自然回忆概率: {GLOBAL_CONFIG['natural_memory_recall_probability'] * 100}%")
     print(f"追加回复类型库: {len(APPEND_REPLY_TYPES)}类{sum(len(v) for v in APPEND_REPLY_TYPES.values())}条")
     print(f"用户关系系统：已加载{len(permanent_relations)}个永久关系")
     print(f"最近话题记录：{sum(len(v) for v in recent_topics.values())}条")
     print(f"追加回复历史：{sum(len(v) for v in append_reply_history.values())}条")
+    print(f"用户最后活动记录：{len(user_last_activity)}条")
     print(f"{'='*60}\n")
     
     updater = Updater(
