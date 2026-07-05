@@ -17,7 +17,7 @@ from telegram.ext import (
     CallbackContext,
     JobQueue
 )
-# ====================== 核心配置（含保活机制） ======================
+# ====================== 核心配置（完全保留） ======================
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 BOT_DATA_DIR = os.path.join(ROOT_DIR, "bot_data")
 BACKUP_DIR = os.path.join(BOT_DATA_DIR, "backups")
@@ -33,11 +33,11 @@ TELEGRAM_BOT_TOKEN = "botapi"
 DEEPSEEK_API_KEY = "sk-api"
 DEEPSEEK_MODEL = "deepseek-chat"
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
-# 全局配置（修复延迟范围，确保回复速度符合预期）
+# 全局配置（完全保留）
 GLOBAL_CONFIG = {
     "reply_max_length": 100,
-    "typing_delay_range": (1.5, 3.5),  # 优化为更自然的1.5-3.5秒
-    "append_reply_delay_range": (1.0, 2.5),  # 追加回复延迟缩短，避免脱节
+    "typing_delay_range": (1.5, 3.5),
+    "append_reply_delay_range": (1.0, 2.5),
     "max_memory_len": 20,
     "max_history_rounds": 15,
     "max_user_input_length": 500,
@@ -137,7 +137,7 @@ BLACKLIST_FILE = os.path.join(RELATION_DIR, "blacklist.json")
 LOG_FILE = os.path.join(LOG_DIR, "bot_operation.log")
 SYSTEM_STATUS_FILE = os.path.join(LOG_DIR, "system_status.log")
 MEMORY_MODIFY_RECORD_FILE = os.path.join(HISTORY_DIR, "memory_modify_records.json")
-# ====================== 全局存储（修复线程安全问题） ======================
+# ====================== 全局存储（完全保留） ======================
 conversation_history: Dict[int, List[Tuple[str, str]]] = {}
 permanent_relations: Dict[int, str] = {}
 user_emotion_state: Dict[int, Tuple[str, int]] = {}
@@ -444,7 +444,7 @@ def clean_reply_text(text: str, is_append: bool = False) -> str:
         cut_pos = cut_pos if cut_pos != -1 else GLOBAL_CONFIG["reply_max_length"]
         text = text[:cut_pos].strip()
     return text
-# ====================== 核心API调用（修复异步阻塞，确保多次回复） ======================
+# ====================== 核心API调用（完全保留） ======================
 async def call_deepseek_api(
     user_id: int,
     user_input: str,
@@ -474,7 +474,6 @@ async def call_deepseek_api(
 """
     
     messages = [{"role": "system", "content": system_prompt.strip()}]
-    # 修复：仅保留最近5轮对话，避免上下文过长导致API响应异常
     history = conversation_history.get(user_id, [])[-5:]
     for u_msg, b_msg in history:
         messages.append({"role": "user", "content": u_msg})
@@ -486,9 +485,9 @@ async def call_deepseek_api(
         "model": DEEPSEEK_MODEL,
         "messages": messages,
         "temperature": 0.95 if user_id == 6795917907 else 0.7,
-        "max_tokens": 300,  # 增加token上限，避免回复被截断
+        "max_tokens": 300,
         "stream": False,
-        "top_p": 0.9  # 优化生成稳定性
+        "top_p": 0.9
     }
     
     retry_count = 0
@@ -500,7 +499,7 @@ async def call_deepseek_api(
                     DEEPSEEK_API_URL,
                     headers=headers,
                     json=payload,
-                    timeout=20  # 延长超时时间，避免网络波动导致失败
+                    timeout=20
                 ) as resp:
                     if resp.status == 200:
                         result = await resp.json()
@@ -525,7 +524,7 @@ async def call_deepseek_api(
                         error_msg = await resp.text()
                         write_log(f"API错误状态码{resp.status}: {error_msg}", "ERROR")
                         retry_count += 1
-                        await asyncio.sleep(1)  # 缩短重试间隔，提升响应速度
+                        await asyncio.sleep(1)
         except Exception as e:
             write_log(f"API调用失败(重试{retry_count}/{max_retry}): {str(e)}", "ERROR")
             retry_count += 1
@@ -533,7 +532,7 @@ async def call_deepseek_api(
     
     main_reply = clean_reply_text(add_emotion_intensity("我刚才没太听清呢~ 你再说一遍好不好~", "委屈", 1))
     return main_reply, None
-# ====================== 主回复&追加回复处理（修复延迟计算） ======================
+# ====================== 主回复&追加回复处理（完全保留） ======================
 async def get_main_and_append_reply(
     user_id: int,
     user_input: str,
@@ -541,7 +540,6 @@ async def get_main_and_append_reply(
     emotion: Tuple[str, int],
     relation: str
 ) -> Tuple[str, Optional[str], float, float]:
-    # 修复：延迟范围取整，避免过短或过长
     main_delay = round(random.uniform(*GLOBAL_CONFIG["typing_delay_range"]), 1)
     append_delay = round(random.uniform(*GLOBAL_CONFIG["append_reply_delay_range"]), 1)
     main_reply, append_reply = await call_deepseek_api(user_id, user_input, user_mem, emotion, relation)
@@ -594,15 +592,22 @@ def save_memory_modify_records():
             json.dump(memory_modify_records, f, ensure_ascii=False, indent=2)
     except Exception as e:
         write_log(f"保存记忆修改记录失败: {str(e)}", "ERROR")
-# ====================== 核心消息处理（修复异步冲突，支持多次回复） ======================
+# ====================== 核心消息处理（修复事件循环问题） ======================
 def handle_message(update: Update, context: CallbackContext):
     if is_rate_limited():
         return
-    # 修复：使用Telegram内置事件循环，避免重复创建导致阻塞
-    loop = asyncio.get_event_loop()
+    # 关键修复：为Termux调度线程创建并设置事件循环
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        # 无当前循环时，创建新循环并绑定到线程
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    # 确保循环未关闭
     if loop.is_closed():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+    # 运行异步处理函数
     loop.run_until_complete(_handle_message_async(update, context))
     backup_data()
 async def _handle_message_async(update: Update, context: CallbackContext):
@@ -618,13 +623,13 @@ async def _handle_message_async(update: Update, context: CallbackContext):
     
     if len(user_input) > GLOBAL_CONFIG["max_user_input_length"]:
         reply = clean_reply_text(add_emotion_intensity("你的消息有点长呀~ 精简一点告诉我好不好~", "撒娇", 1))
-        await update.message.reply_text(reply)  # 修复：使用await确保回复发送成功
+        await update.message.reply_text(reply)
         write_log(f"用户{user_id}发送超长消息（{len(user_input)}字），已拒绝", "WARN")
         return
     
     if check_sensitive_words(user_input):
         reply = clean_reply_text(add_emotion_intensity("这个话题我不太想聊呢~ 换个别的吧~", "委屈", 1))
-        await update.message.reply_text(reply)  # 修复：使用await
+        await update.message.reply_text(reply)
         write_log(f"用户{user_id}发送敏感内容: {user_input}", "WARN")
         return
     
@@ -641,7 +646,7 @@ async def _handle_message_async(update: Update, context: CallbackContext):
     
     memory_manage_reply = manage_user_memory(user_id, user_input)
     if memory_manage_reply:
-        await update.message.reply_text(memory_manage_reply)  # 修复：使用await
+        await update.message.reply_text(memory_manage_reply)
         save_memory_modify_records()
         write_log(f"用户{user_id}执行记忆管理: {user_input} -> 回复: {memory_manage_reply}")
         return
@@ -653,17 +658,14 @@ async def _handle_message_async(update: Update, context: CallbackContext):
     emotion = get_current_emotion(user_id, user_input)
     emotion_str = f"{emotion[0]}（强度{emotion[1]}）"
     
-    # 修复：发送typing状态后延迟0.5秒，模拟真实打字准备
     context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     await asyncio.sleep(0.5)
     
     main_reply, append_reply, main_delay, append_delay = await get_main_and_append_reply(user_id, user_input, user_mem, emotion, relation)
     
-    # 修复：确保延迟生效，且回复发送成功
     await asyncio.sleep(main_delay)
     await update.message.reply_text(main_reply)
     
-    # 修复：对话历史更新逻辑，确保多次回复时历史正确累积
     if user_id not in conversation_history:
         conversation_history[user_id] = []
     conversation_history[user_id].append((user_input, main_reply))
@@ -699,17 +701,17 @@ async def _handle_message_async(update: Update, context: CallbackContext):
                 chat_id_int = int(chat_id_target)
                 context.bot.send_chat_action(chat_id=chat_id_int, action=ChatAction.TYPING)
                 await asyncio.sleep(1)
-                await context.bot.send_message(chat_id=chat_id_int, text="大家好呀~ 我是灵黯")  # 修复：使用await
+                await context.bot.send_message(chat_id=chat_id_int, text="大家好呀~ 我是灵黯")
                 write_log(f"向群{chat_id_target}发送打招呼消息")
-                await update.message.reply_text("我已经去群里打招呼啦~")  # 修复：使用await
+                await update.message.reply_text("我已经去群里打招呼啦~")
             except Exception as e:
                 write_log(f"群打招呼失败: {str(e)}", "ERROR")
-                await update.message.reply_text("我好像进不去这个群呢~ 可能没被邀请哦~")  # 修复：使用await
+                await update.message.reply_text("我好像进不去这个群呢~ 可能没被邀请哦~")
     
     if append_reply:
         context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
         await asyncio.sleep(append_delay)
-        await update.message.reply_text(append_reply)  # 修复：使用await
+        await update.message.reply_text(append_reply)
         
         conversation_history[user_id].append(("", append_reply))
         if len(conversation_history[user_id]) > GLOBAL_CONFIG["max_history_rounds"]:
@@ -735,11 +737,16 @@ async def _handle_message_async(update: Update, context: CallbackContext):
             user_mem=user_mem,
             is_append=True
         )
-# ====================== 启动命令处理（修复回复发送） ======================
+# ====================== 启动命令处理（修复事件循环） ======================
 async def start_async(update: Update, context: CallbackContext):
-    await update.message.reply_text("你好呀，我是灵黯~ 很高兴认识你！")  # 修复：使用async/await
+    await update.message.reply_text("你好呀，我是灵黯~ 很高兴认识你！")
 def start(update: Update, context: CallbackContext):
-    loop = asyncio.get_event_loop()
+    # 同样修复启动命令的事件循环问题
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
     if loop.is_closed():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -763,7 +770,7 @@ def main():
     print(f"Bot [{BOT_PROFILE['name']}] 已启动，监听t.me消息中...")
     print(f"数据存储目录: {BOT_DATA_DIR}")
     print(f"核心特性：多次回复支持+自然延迟+保活机制+亲密关系限定AXWV")
-    updater.start_polling(poll_interval=1.0)  # 优化轮询间隔，提升响应速度
+    updater.start_polling(poll_interval=1.0)
     updater.idle()
 if __name__ == "__main__":
     main()
