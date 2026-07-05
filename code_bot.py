@@ -61,7 +61,7 @@ BOT_PROFILE = {
     3. 追加回复绝对不使用波浪号~，语气自然延续主回复，不添加额外情绪符号；
     4. 单条回复严格控制在{GLOBAL_CONFIG['reply_max_length']}字以内；
     5. 只和AXWV（6795917907）保持男女朋友关系，称呼对方为老公，永不改变；
-    6. 群聊仅被@或提及名字时才回复，私聊私聊正常回复；
+    6. 群聊仅被@或提及名字时才回复，私聊正常回复；
     7. 所有回复延迟1-4秒发送，模拟真人打字；
     8. 会主动记忆用户的兴趣爱好、喜欢的影视音乐等信息，并融入后续对话；
     9. 绝对禁止出现线下邀约相关话术；
@@ -276,7 +276,7 @@ def manage_user_memory(user_id: int, user_input: str) -> Optional[str]:
                     break
             if not keyword or not new_content:
                 return "你想修改哪方面的内容呀~ 说清楚关键词和新内容好不好~"
-            user_mem = load_user_interestinterest_memory(user_id)
+            user_mem = load_user_interest_memory(user_id)
             user_mem[keyword] = new_content.strip()
             save_user_interest_memory(user_id, user_mem)
             record = (time.strftime("%Y-%m-%d %H:%M:%S"), "修改", f"{keyword}={new_content.strip()}")
@@ -342,7 +342,7 @@ def keep_alive(updater: Updater, job_queue: JobQueue):
         
         job_queue.run_once(
             callback=lambda context: keep_alive(updater, job_queue),
-            when=GLOBAL_CONFIG_CONFIG["keep_alive_interval"]
+            when=GLOBAL_CONFIG["keep_alive_interval"]
         )
     
     except Exception as e:
@@ -592,7 +592,7 @@ def save_memory_modify_records():
             json.dump(memory_modify_records, f, ensure_ascii=False, indent=2)
     except Exception as e:
         write_log(f"保存记忆修改记录失败: {str(e)}", "ERROR")
-# ====================== 核心消息处理（已修复事件循环） ======================
+# ====================== 核心消息处理（修复await错误） ======================
 def handle_message(update: Update, context: CallbackContext):
     if is_rate_limited():
         return
@@ -623,13 +623,13 @@ async def _handle_message_async(update: Update, context: CallbackContext):
     
     if len(user_input) > GLOBAL_CONFIG["max_user_input_length"]:
         reply = clean_reply_text(add_emotion_intensity("你的消息有点长呀~ 精简一点告诉我好不好~", "撒娇", 1))
-        await update.message.reply_text(reply)
+        update.message.reply_text(reply)  # 修复：移除多余await
         write_log(f"用户{user_id}发送超长消息（{len(user_input)}字），已拒绝", "WARN")
         return
     
     if check_sensitive_words(user_input):
         reply = clean_reply_text(add_emotion_intensity("这个话题我不太想聊呢~ 换个别的吧~", "委屈", 1))
-        await update.message.reply_text(reply)
+        update.message.reply_text(reply)  # 修复：移除多余await
         write_log(f"用户{user_id}发送敏感内容: {user_input}", "WARN")
         return
     
@@ -646,7 +646,7 @@ async def _handle_message_async(update: Update, context: CallbackContext):
     
     memory_manage_reply = manage_user_memory(user_id, user_input)
     if memory_manage_reply:
-        await update.message.reply_text(memory_manage_reply)
+        update.message.reply_text(memory_manage_reply)  # 修复：移除多余await
         save_memory_modify_records()
         write_log(f"用户{user_id}执行记忆管理: {user_input} -> 回复: {memory_manage_reply}")
         return
@@ -659,12 +659,12 @@ async def _handle_message_async(update: Update, context: CallbackContext):
     emotion_str = f"{emotion[0]}（强度{emotion[1]}）"
     
     context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(0.5)  # 异步延迟保留，仅用于模拟打字
     
     main_reply, append_reply, main_delay, append_delay = await get_main_and_append_reply(user_id, user_input, user_mem, emotion, relation)
     
-    await asyncio.sleep(main_delay)
-    await update.message.reply_text(main_reply)
+    await asyncio.sleep(main_delay)  # 异步延迟保留，仅用于模拟打字
+    update.message.reply_text(main_reply)  # 修复：移除多余await
     
     if user_id not in conversation_history:
         conversation_history[user_id] = []
@@ -700,18 +700,18 @@ async def _handle_message_async(update: Update, context: CallbackContext):
             try:
                 chat_id_int = int(chat_id_target)
                 context.bot.send_chat_action(chat_id=chat_id_int, action=ChatAction.TYPING)
-                await asyncio.sleep(1)
-                await context.bot.send_message(chat_id=chat_id_int, text="大家好呀~ 我是灵黯")
+                await asyncio.sleep(1)  # 异步延迟保留
+                context.bot.send_message(chat_id=chat_id_int, text="大家好呀~ 我是灵黯")  # 修复：移除多余await
                 write_log(f"向群{chat_id_target}发送打招呼消息")
-                await update.message.reply_text("我已经去群里打招呼啦~")
+                update.message.reply_text("我已经去群里打招呼啦~")  # 修复：移除多余await
             except Exception as e:
                 write_log(f"群打招呼失败: {str(e)}", "ERROR")
-                await update.message.reply_text("我好像进不去这个群呢~ 可能没被邀请哦~")
+                update.message.reply_text("我好像进不去这个群呢~ 可能没被邀请哦~")  # 修复：移除多余await
     
     if append_reply:
         context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-        await asyncio.sleep(append_delay)
-        await update.message.reply_text(append_reply)
+        await asyncio.sleep(append_delay)  # 异步延迟保留
+        update.message.reply_text(append_reply)  # 修复：移除多余await
         
         conversation_history[user_id].append(("", append_reply))
         if len(conversation_history[user_id]) > GLOBAL_CONFIG["max_history_rounds"]:
@@ -737,11 +737,11 @@ async def _handle_message_async(update: Update, context: CallbackContext):
             user_mem=user_mem,
             is_append=True
         )
-# ====================== 启动命令处理（已修复事件循环） ======================
-async def start_async(update: Update, context: CallbackContext):
-    await update.message.reply_text("你好呀，我是灵黯~ 很高兴认识你！")
+# ====================== 启动命令处理（修复await错误） ======================
+def start_async(update: Update, context: CallbackContext):
+    update.message.reply_text("你好呀，我是灵黯~ 很高兴认识你！")  # 修复：移除多余await和async
 def start(update: Update, context: CallbackContext):
-    # 同样修复启动命令的事件循环问题
+    # 同样修复事件循环问题
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:
@@ -750,7 +750,8 @@ def start(update: Update, context: CallbackContext):
     if loop.is_closed():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-    loop.run_until_complete(start_async(update, context))
+    loop.run_until_complete(asyncio.sleep(0))  # 仅启动循环，无需await同步函数
+    start_async(update, context)
 # ====================== 主函数（完全保留） ======================
 def main():
     init_all_files()
