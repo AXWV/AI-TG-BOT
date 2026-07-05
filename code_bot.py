@@ -877,13 +877,11 @@ def main():
     print("Bot开始监听消息...")
     print("按 Ctrl+C 停止运行\n")
     
-    # 开始轮询
+    # 开始轮询 - 修复参数问题
     updater.start_polling(
         poll_interval=GLOBAL_CONFIG["poll_interval"],
         timeout=10,
-        drop_pending_updates=True,
-        bootstrap_retries=-1,
-        clean=True
+        drop_pending_updates=True
     )
     
     # 保持运行
