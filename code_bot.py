@@ -14,16 +14,10 @@ import concurrent.futures
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional, Set
 import requests
-from telegram import Update, Chat, User, ChatAction
-from telegram.ext import (
-    Updater,
-    CommandHandler,
-    MessageHandler,
-    Filters,
-    CallbackContext,
-    JobQueue
-)
-
+from telegram import Update, Chat, User
+from telegram.constants import ChatAction
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, JobQueue
+#v1.11.0  适配telegram-python-bot v20
 # ====================== 核心配置 ======================
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 BOT_DATA_DIR = os.path.join(ROOT_DIR, "bot_data")
@@ -1753,7 +1747,7 @@ def main():
     load_all_data()
     write_log("Bot启动，所有数据加载完成", "INFO")
     print(f"\n{'='*60}")
-    print(f"Bot [{BOT_PROFILE['name']}] 启动成功 - 版本1.11.0")
+    print(f"Bot [{BOT_PROFILE['name']}] 启动成功 - 版本1.12.0")
     print(f"数据存储目录: {BOT_DATA_DIR}")
     print(f"新增功能：时间观念系统、智能回忆功能")
     print(f"时间感知: {'开启' if GLOBAL_CONFIG['time_awareness_enabled'] else '关闭'}")
@@ -1765,35 +1759,33 @@ def main():
     print(f"用户最后活动记录：{len(user_last_activity)}条")
     print(f"{'='*60}\n")
     
-    updater = Updater(
-        token=TELEGRAM_BOT_TOKEN, 
-        use_context=True,
-        workers=GLOBAL_CONFIG["workers"]
-    )
+    # 创建 Application 实例（使用 v20 新 API）
+    application = Application.builder() \
+        .token(TELEGRAM_BOT_TOKEN) \
+        .concurrent_updates(GLOBAL_CONFIG["workers"]) \
+        .build()
     
-    dp = updater.dispatcher
-    job_queue = updater.job_queue
+    # 注册处理器
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-    
+    # 定时任务（保活）
+    job_queue = application.job_queue
     if job_queue:
         job_queue.run_repeating(keep_alive, interval=GLOBAL_CONFIG["keep_alive_interval"], first=10)
     
     print("Bot开始监听消息...")
     print("按 Ctrl+C 停止运行\n")
     
-    updater.start_polling(
+    # 启动轮询（阻塞直到手动停止）
+    application.run_polling(
         poll_interval=GLOBAL_CONFIG["poll_interval"],
         timeout=10,
         drop_pending_updates=True,
-        bootstrap_retries=-1,
-        read_latency=2.0,
         allowed_updates=['message']
     )
     
-    updater.idle()
-    
+    # 停止后清理线程池
     thread_pool.shutdown(wait=True)
 
 if __name__ == "__main__":
