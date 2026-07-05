@@ -1,20 +1,19 @@
 import json
 import os
 import random
-import asyncio
 import time
 import re
 import sys
 import threading
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
-import aiohttp
+import requests
 from telegram import Update, Chat, User, ChatAction
 from telegram.ext import (
-    Updater,
+    Application,
     CommandHandler,
     MessageHandler,
-    Filters,
+    filters,
     CallbackContext,
     JobQueue
 )
@@ -26,19 +25,19 @@ BACKUP_DIR = os.path.join(BOT_DATA_DIR, "backups")
 HISTORY_DIR = os.path.join(BOT_DATA_DIR, "history")
 RELATION_DIR = os.path.join(BOT_DATA_DIR, "relations")
 LOG_DIR = os.path.join(BOT_DATA_DIR, "logs")
-CONFIG_DIR = os.path.join(BOT_DATA_DIR, "configs")  # 正确变量名
+CONFIG_DIR = os.path.join(BOT_DATA_DIR, "configs")
 USER_MEMORY_DIR = os.path.join(HISTORY_DIR, "user_memories")
 
 for dir_path in [BOT_DATA_DIR, BACKUP_DIR, HISTORY_DIR, RELATION_DIR, LOG_DIR, CONFIG_DIR, USER_MEMORY_DIR]:
     os.makedirs(dir_path, exist_ok=True)
 
-# 密钥配置（请确保有效）
+# 密钥配置
 TELEGRAM_BOT_TOKEN = "botapi"
 DEEPSEEK_API_KEY = "sk-api"
 DEEPSEEK_MODEL = "deepseek-chat"
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 
-# 全局配置（优化超时和重试）
+# 全局配置
 GLOBAL_CONFIG = {
     "reply_max_length": 100,
     "typing_delay_range": (1.5, 3.5),
@@ -48,14 +47,15 @@ GLOBAL_CONFIG = {
     "max_user_input_length": 500,
     "backup_interval_hours": 24,
     "rate_limit_per_second": 5,
-    "keep_alive_interval": 10,
-    "keep_alive_timeout": 5,
+    "keep_alive_interval": 15,
+    "keep_alive_timeout": 8,
     "reconnect_attempts": 3,
     "append_reply_probability": 0.3,
     "max_api_tokens": 200,
-    "api_retry_count": 1,
-    "api_timeout": 10,
-    "task_timeout": 20
+    "api_retry_count": 2,
+    "api_timeout": 30,
+    "task_timeout": 25,
+    "poll_interval": 0.8
 }
 
 # 谢灵黯人设配置
@@ -80,7 +80,7 @@ BOT_PROFILE = {
     11. 追加回复必须紧密关联主回复，不偏离话题，不提出新问题；
     12. 回复中提及用户时直接用昵称，绝对禁止使用@符号；
     13. 群打招呼时，直接说极简问候语；
-    14. 自我介绍仅限“我是灵黯”；
+    14. 自我介绍仅限"我是灵黯"；
     15. 绝不对AXWV以外的用户使用亲密称呼。
     """
 }
@@ -132,11 +132,11 @@ DEFAULT_EMOTION_CONFIG = {
     }
 }
 
-# 配置文件路径（修复变量名拼写错误）
+# 配置文件路径
 CONFIG_FILES = {
     "emotion": os.path.join(CONFIG_DIR, "emotion_config.json"),
-    "sensitive": os.path.join(CONFIG_DIR, "sensitive_words.json"),  # 修复：CONFIG_DIR_DIR -> CONFIG_DIR
-    "memory_keywords": os.path.join(CONFIG_DIR, "memory_keywords.json")  # 修复：CONFIG_DIR_DIR -> CONFIG_DIR
+    "sensitive": os.path.join(CONFIG_DIR, "sensitive_words.json"),
+    "memory_keywords": os.path.join(CONFIG_DIR, "memory_keywords.json")
 }
 
 # 敏感词&记忆关键词
@@ -167,8 +167,7 @@ last_keep_alive_time: datetime = datetime.now()
 EMOTION_CONFIG = {}
 SENSITIVE_WORDS = []
 MEMORY_KEYWORDS = []
-LOOP_CACHE = {}  # 线程事件循环缓存
-THREAD_LOCK = threading.Lock()  # 线程安全锁
+THREAD_LOCK = threading.Lock()
 
 # ====================== 初始化工具函数 ======================
 def load_config_file(file_path: str, default_data: dict) -> dict:
@@ -193,28 +192,6 @@ def init_all_files():
             with open(file_path, "w", encoding="utf-8") as f:
                 json.dump({}, f, ensure_ascii=False, indent=2)
 
-# ====================== 线程安全工具函数 ======================
-def get_thread_safe_loop() -> asyncio.AbstractEventLoop:
-    """为当前线程获取或创建事件循环（非阻塞模式）"""
-    thread_id = threading.get_ident()
-    with THREAD_LOCK:
-        if thread_id not in LOOP_CACHE:
-            loop = asyncio.new_event_loop()
-            LOOP_CACHE[thread_id] = loop
-            
-            # 非阻塞启动循环
-            def start_loop(loop):
-                asyncio.set_event_loop(loop)
-                try:
-                    loop.run_forever()
-                except Exception as e:
-                    write_log(f"事件循环异常: {str(e)}", "ERROR")
-            
-            loop_thread = threading.Thread(target=start_loop, args=(loop,), daemon=True)
-            loop_thread.start()
-            time.sleep(0.1)  # 等待循环启动
-    return LOOP_CACHE[thread_id]
-
 # ====================== 长上下文记忆功能 ======================
 def load_user_global_memory(user_id: int) -> list:
     try:
@@ -227,18 +204,19 @@ def load_user_global_memory(user_id: int) -> list:
 
 def save_user_global_memory(user_id: int, new_message: dict):
     try:
-        memories = load_user_global_memory(user_id)
-        memories.append(new_message)
-        if len(memories) > GLOBAL_CONFIG["max_memory_len"]:
-            memories = memories[-GLOBAL_CONFIG["max_memory_len"]:]
-        with open(USER_MEMORY_FILE, "r+", encoding="utf-8") as f:
+        with open(USER_MEMORY_FILE, "r", encoding="utf-8") as f:
             all_memories = json.load(f)
-            all_memories[str(user_id)] = memories
-            f.seek(0)
-            json.dump(all_memories, f, ensure_ascii=False, indent=2)
-            f.truncate()
     except Exception as e:
-        write_log(f"保存用户{user_id}全局记忆失败: {str(e)}", "ERROR")
+        all_memories = {}
+    
+    user_memories = all_memories.get(str(user_id), [])
+    user_memories.append(new_message)
+    if len(user_memories) > GLOBAL_CONFIG["max_memory_len"]:
+        user_memories = user_memories[-GLOBAL_CONFIG["max_memory_len"]:]
+    
+    all_memories[str(user_id)] = user_memories
+    with open(USER_MEMORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(all_memories, f, ensure_ascii=False, indent=2)
 
 def load_user_interest_memory(user_id: int) -> Dict[str, str]:
     memory_path = os.path.join(USER_MEMORY_DIR, f"{user_id}-memory.json")
@@ -265,6 +243,7 @@ def write_log(content: str, level: str = "INFO"):
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(log_line)
+        print(log_line.strip())  # 同时打印到控制台
         if level.upper() == "ERROR":
             error_log_file = os.path.join(LOG_DIR, "error.log")
             with open(error_log_file, "a", encoding="utf-8") as f:
@@ -274,7 +253,14 @@ def write_log(content: str, level: str = "INFO"):
 
 def print_custom_log(user: User, chat_type: str, user_msg: str, bot_msg: str, delay: float, emotion: str, user_mem: dict, is_append: bool = False):
     timestamp = time.strftime("%H:%M:%S", time.localtime())
-    user_name = USER_NICKNAME_MAP.get(user.username, user.full_name) or "未知用户"
+    user_name = "未知用户"
+    for nickname, uid in USER_NICKNAME_MAP.items():
+        if uid == user.id:
+            user_name = nickname
+            break
+    if user_name == "未知用户":
+        user_name = user.full_name or user.username or "未知用户"
+    
     user_id = user.id
     reply_type = "追加回复" if is_append else "主回复"
     print(f"[{timestamp}] {user_name}(ID:{user_id}:{chat_type}):{user_msg}")
@@ -385,33 +371,23 @@ def backup_data():
         write_log(f"数据备份失败: {str(e)}", "ERROR")
 
 # ====================== t.me连接保活机制 ======================
-def keep_alive(updater: Updater, job_queue: JobQueue):
+async def keep_alive(context: CallbackContext):
     global last_keep_alive_time
     now = datetime.now()
     try:
         if (now - last_keep_alive_time).total_seconds() >= GLOBAL_CONFIG["keep_alive_interval"]:
-            updater.bot.get_me(timeout=GLOBAL_CONFIG["keep_alive_timeout"])
+            await context.bot.get_me(timeout=GLOBAL_CONFIG["keep_alive_timeout"])
             last_keep_alive_time = now
             write_log(f"t.me连接保活成功 - 当前时间：{now.strftime('%Y-%m-%d %H:%M:%S')}", "DEBUG")
-        
-        job_queue.run_once(
-            callback=lambda context: keep_alive(updater, job_queue),
-            when=GLOBAL_CONFIG["keep_alive_interval"]
-        )
-    
     except Exception as e:
         write_log(f"t.me连接断开：{str(e)}，启动重试...", "ERROR")
         retry_count = 0
         while retry_count < GLOBAL_CONFIG["reconnect_attempts"]:
             try:
                 time.sleep(2 ** retry_count)
-                updater.bot.get_me(timeout=GLOBAL_CONFIG["keep_alive_timeout"])
+                await context.bot.get_me(timeout=GLOBAL_CONFIG["keep_alive_timeout"])
                 last_keep_alive_time = datetime.now()
                 write_log(f"t.me连接重试成功（第{retry_count+1}次）", "INFO")
-                job_queue.run_once(
-                    callback=lambda context: keep_alive(updater, job_queue),
-                    when=GLOBAL_CONFIG["keep_alive_interval"]
-                )
                 break
             except Exception as retry_e:
                 retry_count += 1
@@ -505,14 +481,15 @@ def clean_reply_text(text: str, is_append: bool = False) -> str:
         text = text[:cut_pos].strip()
     return text
 
-# ====================== 核心API调用（超时控制+格式容错） ======================
-async def call_deepseek_api(
+# ====================== 核心API调用 ======================
+def call_deepseek_api(
     user_id: int,
     user_input: str,
     user_mem: dict,
     emotion: Tuple[str, int],
     relation: str
 ) -> Tuple[str, Optional[str]]:
+    """同步API调用，确保稳定"""
     emotion_type, emotion_intensity = emotion
     user_nickname = get_user_nickname(user_id)
     final_relation = "亲密关系" if (user_id == 6795917907 and relation == "亲密关系") else relation
@@ -535,7 +512,7 @@ async def call_deepseek_api(
 """
     
     messages = [{"role": "system", "content": system_prompt.strip()}]
-    history = conversation_history.get(user_id, [])[-3:]  # 减少历史对话长度，加快响应
+    history = conversation_history.get(user_id, [])[-3:]
     for u_msg, b_msg in history:
         messages.append({"role": "user", "content": u_msg})
         messages.append({"role": "assistant", "content": b_msg})
@@ -553,80 +530,58 @@ async def call_deepseek_api(
     
     retry_count = 0
     max_retry = GLOBAL_CONFIG["api_retry_count"]
+    
     while retry_count <= max_retry:
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    DEEPSEEK_API_URL,
-                    headers=headers,
-                    json=payload,
-                    timeout=GLOBAL_CONFIG["api_timeout"]
-                ) as resp:
-                    if resp.status == 200:
-                        result = await resp.json()
-                        raw_reply = result["choices"][0]["message"]["content"].strip()
-                        
-                        # 格式容错处理
-                        if SEPARATOR not in raw_reply:
-                            main_reply = clean_reply_text(add_emotion_intensity(raw_reply.strip(), emotion_type, emotion_intensity))
-                            return main_reply, None
-                        
-                        main_reply_raw, append_reply_raw = raw_reply.split(SEPARATOR, 1)
-                        main_reply = clean_reply_text(add_emotion_intensity(main_reply_raw.strip(), emotion_type, emotion_intensity))
-                        append_reply = append_reply_raw.strip()
-                        
-                        # 过滤无效追加回复
-                        if append_reply in ["None", "", "无", "没有", "null"]:
-                            append_reply = None
-                        elif len(append_reply) > 50:
-                            append_reply = clean_reply_text(append_reply[:50], is_append=True)
-                        else:
-                            append_reply = clean_reply_text(append_reply, is_append=True)
-                        
-                        return main_reply, append_reply
-                    else:
-                        error_msg = await resp.text()
-                        write_log(f"API错误状态码{resp.status}: {error_msg}", "ERROR")
-                        retry_count += 1
-                        await asyncio.sleep(0.5)
+            # 使用requests库进行同步API调用
+            response = requests.post(
+                DEEPSEEK_API_URL,
+                headers=headers,
+                json=payload,
+                timeout=GLOBAL_CONFIG["api_timeout"]
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                raw_reply = result["choices"][0]["message"]["content"].strip()
+                
+                if SEPARATOR not in raw_reply:
+                    main_reply = clean_reply_text(add_emotion_intensity(raw_reply.strip(), emotion_type, emotion_intensity))
+                    return main_reply, None
+                
+                main_reply_raw, append_reply_raw = raw_reply.split(SEPARATOR, 1)
+                main_reply = clean_reply_text(add_emotion_intensity(main_reply_raw.strip(), emotion_type, emotion_intensity))
+                append_reply = append_reply_raw.strip()
+                
+                if append_reply in ["None", "", "无", "没有", "null"]:
+                    append_reply = None
+                elif len(append_reply) > 50:
+                    append_reply = clean_reply_text(append_reply[:50], is_append=True)
+                else:
+                    append_reply = clean_reply_text(append_reply, is_append=True)
+                
+                return main_reply, append_reply
+            else:
+                write_log(f"API错误状态码{response.status_code}: {response.text}", "ERROR")
+                retry_count += 1
+                time.sleep(0.5 * (retry_count + 1))  # 递增等待
+                
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            write_log(f"API网络错误(重试{retry_count}/{max_retry}): {str(e)}", "ERROR")
+            retry_count += 1
+            time.sleep(1 * (retry_count + 1))
         except Exception as e:
             write_log(f"API调用失败(重试{retry_count}/{max_retry}): {str(e)}", "ERROR")
             retry_count += 1
-            await asyncio.sleep(0.5)
+            time.sleep(0.5 * (retry_count + 1))
     
-    # 调用失败兜底回复
+    # 兜底回复
     main_reply = clean_reply_text(add_emotion_intensity("网络有点卡呀~ 我们换个话题聊聊好不好~", "委屈", 1))
     return main_reply, None
 
-# ====================== 主回复&追加回复处理 ======================
-async def get_main_and_append_reply(
-    user_id: int,
-    user_input: str,
-    user_mem: dict,
-    emotion: Tuple[str, int],
-    relation: str
-) -> Tuple[str, Optional[str], float, float]:
-    main_delay = round(random.uniform(*GLOBAL_CONFIG["typing_delay_range"]), 1)
-    append_delay = round(random.uniform(*GLOBAL_CONFIG["append_reply_delay_range"]), 1)
-    try:
-        # API调用加超时保护
-        main_reply, append_reply = await asyncio.wait_for(
-            call_deepseek_api(user_id, user_input, user_mem, emotion, relation),
-            timeout=GLOBAL_CONFIG["api_timeout"]
-        )
-    except asyncio.TimeoutError:
-        write_log(f"API调用超时（用户{user_id}）", "ERROR")
-        main_reply = clean_reply_text(add_emotion_intensity("刚才没反应过来~ 你再说一遍好不好~", "委屈", 1))
-        append_reply = None
-    except Exception as e:
-        write_log(f"获取回复失败（用户{user_id}）: {str(e)}", "ERROR")
-        main_reply = clean_reply_text(add_emotion_intensity("有点小故障呢~ 我们稍后再聊呀~", "委屈", 1))
-        append_reply = None
-    return main_reply, append_reply, main_delay, append_delay
-
 # ====================== 数据加载/保存 ======================
 def load_all_data():
-    global user_blacklist
+    global user_blacklist, conversation_history, permanent_relations, memory_modify_records
     try:
         with open(CONVERSATION_HISTORY_FILE, "r", encoding="utf-8") as f:
             raw_history = json.load(f)
@@ -676,17 +631,22 @@ def save_memory_modify_records():
     except Exception as e:
         write_log(f"保存记忆修改记录失败: {str(e)}", "ERROR")
 
-# ====================== 核心消息处理（终极修复版） ======================
-async def _handle_message_worker(update: Update, context: CallbackContext):
-    """实际消息处理逻辑（带超时保护）"""
-    user = update.effective_user
-    user_id = user.id
-    user_input = update.message.text.strip()
-    chat = update.effective_chat
-    chat_id = chat.id
-    user_mem = {}
+# ====================== 核心消息处理 ======================
+async def handle_message(update: Update, context: CallbackContext):
+    """异步消息处理主函数"""
+    if is_rate_limited():
+        write_log("消息被限流", "WARN")
+        return
     
     try:
+        user = update.effective_user
+        user_id = user.id
+        user_input = update.message.text.strip()
+        chat = update.effective_chat
+        chat_id = chat.id
+        
+        write_log(f"收到消息 from {user_id}: {user_input[:50]}...", "DEBUG")
+        
         # 黑名单过滤
         if user_id in user_blacklist:
             write_log(f"黑名单用户{user_id}尝试发送消息: {user_input}", "WARN")
@@ -712,10 +672,11 @@ async def _handle_message_worker(update: Update, context: CallbackContext):
             need_reply = True
         else:
             chat_type = f"群聊({chat.title})"
-            bot_username = context.bot.username
+            bot_username = (await context.bot.get_me()).username
             need_reply = (f"@{bot_username}" in user_input) or (BOT_PROFILE["name"] in user_input) or (BOT_PROFILE["short_name"] in user_input)
+        
         if not need_reply:
-            write_log(f"[{chat_type}] 用户{user_id}消息无需回复: {user_input}")
+            write_log(f"[{chat_type}] 用户{user_id}消息无需回复: {user_input[:30]}...", "DEBUG")
             return
         
         # 记忆管理（删除/修改）
@@ -723,7 +684,7 @@ async def _handle_message_worker(update: Update, context: CallbackContext):
         if memory_manage_reply:
             await update.message.reply_text(memory_manage_reply)
             save_memory_modify_records()
-            write_log(f"用户{user_id}执行记忆管理: {user_input} -> 回复: {memory_manage_reply}")
+            write_log(f"用户{user_id}执行记忆管理: {user_input} -> 回复: {memory_manage_reply}", "INFO")
             return
         
         # 提取用户记忆
@@ -736,22 +697,32 @@ async def _handle_message_worker(update: Update, context: CallbackContext):
         emotion_str = f"{emotion[0]}（强度{emotion[1]}）"
         
         # 模拟打字状态
-        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        try:
+            await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        except Exception as e:
+            write_log(f"发送打字状态失败: {str(e)}", "WARN")
+        
         await asyncio.sleep(0.5)
         
-        # 获取主回复和追加回复
-        main_reply, append_reply, main_delay, append_delay = await get_main_and_append_reply(user_id, user_input, user_mem, emotion, relation)
+        # 获取主回复和追加回复（使用同步API调用，但通过线程池避免阻塞事件循环）
+        loop = asyncio.get_event_loop()
+        main_reply, append_reply, main_delay, append_delay = await loop.run_in_executor(
+            None,
+            lambda: get_main_and_append_reply(user_id, user_input, user_mem, emotion, relation)
+        )
         
         # 发送主回复
         await asyncio.sleep(main_delay)
         await update.message.reply_text(main_reply)
         
         # 保存对话历史和全局记忆
-        if user_id not in conversation_history:
-            conversation_history[user_id] = []
-        conversation_history[user_id].append((user_input, main_reply))
-        if len(conversation_history[user_id]) > GLOBAL_CONFIG["max_history_rounds"]:
-            conversation_history[user_id].pop(0)
+        with THREAD_LOCK:
+            if user_id not in conversation_history:
+                conversation_history[user_id] = []
+            conversation_history[user_id].append((user_input, main_reply))
+            if len(conversation_history[user_id]) > GLOBAL_CONFIG["max_history_rounds"]:
+                conversation_history[user_id].pop(0)
+        
         save_conversation_history()
         save_user_global_memory(
             user_id,
@@ -785,7 +756,7 @@ async def _handle_message_worker(update: Update, context: CallbackContext):
                     await context.bot.send_chat_action(chat_id=chat_id_int, action=ChatAction.TYPING)
                     await asyncio.sleep(1)
                     await context.bot.send_message(chat_id=chat_id_int, text="大家好呀~ 我是灵黯")
-                    write_log(f"向群{chat_id_target}发送打招呼消息")
+                    write_log(f"向群{chat_id_target}发送打招呼消息", "INFO")
                     await update.message.reply_text("我已经去群里打招呼啦~")
                 except Exception as e:
                     write_log(f"群打招呼失败: {str(e)}", "ERROR")
@@ -793,14 +764,21 @@ async def _handle_message_worker(update: Update, context: CallbackContext):
         
         # 发送追加回复（如有）
         if append_reply:
-            await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+            try:
+                await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+            except Exception as e:
+                write_log(f"发送追加打字状态失败: {str(e)}", "WARN")
+            
             await asyncio.sleep(append_delay)
             await update.message.reply_text(append_reply)
             
             # 保存追加回复到对话历史
-            conversation_history[user_id].append(("", append_reply))
-            if len(conversation_history[user_id]) > GLOBAL_CONFIG["max_history_rounds"]:
-                conversation_history[user_id].pop(0)
+            with THREAD_LOCK:
+                if user_id in conversation_history:
+                    conversation_history[user_id].append(("", append_reply))
+                    if len(conversation_history[user_id]) > GLOBAL_CONFIG["max_history_rounds"]:
+                        conversation_history[user_id].pop(0)
+            
             save_conversation_history()
             save_user_global_memory(
                 user_id,
@@ -825,85 +803,84 @@ async def _handle_message_worker(update: Update, context: CallbackContext):
             )
     
     except Exception as e:
-        # 捕获所有异常，避免线程阻塞
+        # 异常兜底
         write_log(f"消息处理异常（用户{user_id}）: {str(e)}", "ERROR")
         try:
-            # 异常兜底回复
             error_reply = clean_reply_text(add_emotion_intensity("刚才出了点小问题~ 我们重新聊呀~", "委屈", 1))
             await update.message.reply_text(error_reply)
         except Exception as e2:
             write_log(f"异常回复发送失败: {str(e2)}", "ERROR")
-
-def handle_message(update: Update, context: CallbackContext):
-    if is_rate_limited():
-        return
-    try:
-        # 线程安全获取循环
-        loop = get_thread_safe_loop()
-        # 提交任务并设置总超时
-        task = asyncio.run_coroutine_threadsafe(_handle_message_worker(update, context), loop)
-        # 等待任务完成（带超时）
-        task.result(timeout=GLOBAL_CONFIG["task_timeout"])
-    except asyncio.TimeoutError:
-        write_log("消息处理任务超时", "ERROR")
-        try:
-            timeout_reply = clean_reply_text(add_emotion_intensity("响应有点慢呀~ 你稍后再发一次好不好~", "委屈", 1))
-            update.message.reply_text(timeout_reply)
-        except Exception as e:
-            write_log(f"超时回复发送失败: {str(e)}", "ERROR")
-    except Exception as e:
-        write_log(f"任务提交失败: {str(e)}", "ERROR")
-        try:
-            error_reply = clean_reply_text(add_emotion_intensity("好像有点卡~ 等一下再聊呀~", "委屈", 1))
-            update.message.reply_text(error_reply)
-        except Exception as e2:
-            write_log(f"错误回复发送失败: {str(e2)}", "ERROR")
     finally:
         backup_data()
 
+def get_main_and_append_reply(
+    user_id: int,
+    user_input: str,
+    user_mem: dict,
+    emotion: Tuple[str, int],
+    relation: str
+) -> Tuple[str, Optional[str], float, float]:
+    """获取主回复和追加回复（同步版本）"""
+    main_delay = round(random.uniform(*GLOBAL_CONFIG["typing_delay_range"]), 1)
+    append_delay = round(random.uniform(*GLOBAL_CONFIG["append_reply_delay_range"]), 1)
+    
+    try:
+        main_reply, append_reply = call_deepseek_api(
+            user_id, user_input, user_mem, emotion, relation
+        )
+    except Exception as e:
+        write_log(f"获取回复失败（用户{user_id}）: {str(e)}", "ERROR")
+        main_reply = clean_reply_text(add_emotion_intensity("有点小故障呢~ 我们稍后再聊呀~", "委屈", 1))
+        append_reply = None
+    
+    return main_reply, append_reply, main_delay, append_delay
+
 # ====================== 启动命令处理 ======================
-async def start_async(update: Update, context: CallbackContext):
+async def start(update: Update, context: CallbackContext):
+    """处理/start命令"""
     try:
         await update.message.reply_text("你好呀，我是灵黯~ 很高兴认识你！")
+        write_log(f"用户{update.effective_user.id}发送/start命令", "INFO")
     except Exception as e:
         write_log(f"启动回复失败: {str(e)}", "ERROR")
 
-def start(update: Update, context: CallbackContext):
-    try:
-        loop = get_thread_safe_loop()
-        asyncio.run_coroutine_threadsafe(start_async(update, context), loop)
-    except Exception as e:
-        write_log(f"启动命令处理失败: {str(e)}", "ERROR")
-        try:
-            update.message.reply_text("你好呀，我是灵黯~ 很高兴认识你！")
-        except Exception as e2:
-            write_log(f"启动命令兜底回复失败: {str(e2)}", "ERROR")
-
 # ====================== 主函数 ======================
 def main():
+    """主函数"""
     init_all_files()
     load_all_data()
-    write_log("Bot启动，所有数据加载完成")
+    write_log("Bot启动，所有数据加载完成", "INFO")
     
-    # 初始化Bot（指定更新队列大小，避免消息堆积）
-    updater = Updater(token=TELEGRAM_BOT_TOKEN, use_context=True, workers=4)
-    dp = updater.dispatcher
-    job_queue = updater.job_queue
+    print(f"\n{'='*60}")
+    print(f"Bot [{BOT_PROFILE['name']}] 启动成功")
+    print(f"数据存储目录: {BOT_DATA_DIR}")
+    print(f"核心特性：同步API调用 + 异步消息处理 + 线程安全")
+    print(f"用户关系系统：已加载{len(permanent_relations)}个永久关系")
+    print(f"记忆关键词：{len(MEMORY_KEYWORDS)}个")
+    print(f"{'='*60}\n")
+    
+    # 创建Application
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
     # 添加命令和消息处理器
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    # 启动保活机制
-    keep_alive(updater, job_queue)
-    write_log(f"t.me连接保活机制已启动，保活间隔：{GLOBAL_CONFIG['keep_alive_interval']}秒", "INFO")
+    # 添加保活任务
+    job_queue = application.job_queue
+    if job_queue:
+        job_queue.run_repeating(keep_alive, interval=GLOBAL_CONFIG["keep_alive_interval"], first=10)
     
-    # 启动Bot（优化轮询间隔）
-    print(f"Bot [{BOT_PROFILE['name']}] 已启动，监听t.me消息中...")
-    print(f"数据存储目录: {BOT_DATA_DIR}")
-    print(f"核心特性：Termux适配+超时保护+异常兜底+持续监听+智能追加回复")
-    updater.start_polling(poll_interval=0.5, timeout=10)
-    updater.idle()
+    # 启动Bot
+    print("Bot开始监听消息...")
+    print("按 Ctrl+C 停止运行\n")
+    
+    application.run_polling(
+        poll_interval=GLOBAL_CONFIG["poll_interval"],
+        timeout=10,
+        drop_pending_updates=True,
+        allowed_updates=Update.ALL_TYPES
+    )
 
 if __name__ == "__main__":
     main()
