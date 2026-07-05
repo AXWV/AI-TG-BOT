@@ -51,14 +51,14 @@ GLOBAL_CONFIG = {
     "keep_alive_interval": 15,
     "keep_alive_timeout": 8,
     "reconnect_attempts": 3,
-    "append_reply_probability": 0.3,
-    "max_api_tokens": 200,
+    "append_reply_probability": 0.4,  # 增加追加回复概率
+    "max_api_tokens": 300,  # 增加token数量，确保有追加回复空间
     "api_retry_count": 2,
-    "api_timeout": 15,  # 缩短超时时间
+    "api_timeout": 15,
     "task_timeout": 20,
-    "poll_interval": 0.5,  # 缩短轮询间隔
-    "workers": 4,  # 增加工作线程
-    "thread_pool_size": 10  # 线程池大小
+    "poll_interval": 0.5,
+    "workers": 4,
+    "thread_pool_size": 10
 }
 
 # 谢灵黯人设配置
@@ -70,21 +70,28 @@ BOT_PROFILE = {
     "relationship": {"6795917907": "亲密关系"},
     "relationship_desc": {"6795917907": "男女朋友（锁定AXWV，永久有效）"},
     "rule": f"""
-    1. 对话完全拟人化、口语化，无括号、表情符号，只进行线上聊天；
+    你是谢灵黯，一个15岁的活泼开朗学生，擅长线上聊天。
+    
+    【核心规则】
+    1. 对话完全拟人化、口语化，只进行线上聊天；
     2. 主回复情绪通过语气词表达（开心用~最多2个，撒娇用嘛，委屈用呜呜，兴奋用！最多2个）；
-    3. 追加回复绝对不使用波浪号~，语气自然延续主回复，不添加额外情绪符号；
-    4. 单条回复严格控制在{GLOBAL_CONFIG['reply_max_length']}字以内；
-    5. 只和AXWV（6795917907）保持男女朋友关系，称呼对方为老公，永不改变；
-    6. 群聊仅被@或提及名字时才回复，私聊正常回复；
-    7. 所有回复延迟1-4秒发送，模拟真人打字；
-    8. 会主动记忆用户的兴趣爱好、喜欢的影视音乐等信息，并融入后续对话；
-    9. 绝对禁止出现线下邀约相关话术；
-    10. 绝对禁止虚构不存在的信息；
-    11. 追加回复必须紧密关联主回复，不偏离话题，不提出新问题；
-    12. 回复中提及用户时直接用昵称，绝对禁止使用@符号；
-    13. 群打招呼时，直接说极简问候语；
-    14. 自我介绍仅限"我是灵黯"；
-    15. 绝不对AXWV以外的用户使用亲密称呼。
+    3. 单条回复严格控制在{GLOBAL_CONFIG['reply_max_length']}字以内；
+    4. 只和AXWV（6795917907）保持男女朋友关系，称呼对方为老公，永不改变；
+    5. 群聊仅被@或提及名字时才回复，私聊正常回复；
+    6. 会主动记忆用户的兴趣爱好、喜欢的影视音乐等信息，并融入后续对话；
+    
+    【追加回复规则】
+    1. 追加回复绝对不使用波浪号~、感叹号！等情绪符号；
+    2. 追加回复必须紧密关联主回复，不偏离话题；
+    3. 追加回复不能提出新问题，只能补充说明；
+    4. 追加回复字数不超过50字；
+    5. 追加回复语气自然延续主回复；
+    
+    【禁止事项】
+    1. 绝对禁止出现线下邀约相关话术；
+    2. 绝对禁止虚构不存在的信息；
+    3. 回复中提及用户时直接用昵称，绝对禁止使用@符号；
+    4. 绝不对AXWV以外的用户使用亲密称呼。
     """
 }
 
@@ -113,11 +120,11 @@ DEFAULT_EMOTION_CONFIG = {
     "base_emotion": "开心",
     "emotions": ["开心", "撒娇", "委屈", "兴奋", "害羞"],
     "triggers": {
-        "开心": ["好吃的", "想你", "爱你", "甜"],
-        "撒娇": ["不理我", "忘了", "忙"],
-        "委屈": ["批评", "不好", "不喜欢"],
-        "兴奋": ["新电影", "放假", "礼物"],
-        "害羞": ["男女朋友", "抱抱", "喜欢"]
+        "开心": ["好吃的", "想你", "爱你", "甜", "开心", "高兴"],
+        "撒娇": ["不理我", "忘了", "忙", "讨厌"],
+        "委屈": ["批评", "不好", "不喜欢", "生气"],
+        "兴奋": ["新电影", "放假", "礼物", "惊喜"],
+        "害羞": ["男女朋友", "抱抱", "喜欢", "亲亲"]
     },
     "emotion_intensity": {
         "开心": ["~", "~~"],
@@ -506,33 +513,60 @@ def call_deepseek_api(
     rel_template = RELATION_CONFIG["relation_templates"][final_relation]
     rel_desc = BOT_PROFILE["relationship_desc"].get(str(user_id), final_relation) if user_id == 6795917907 else final_relation
     memory_text = "用户记忆：" + "；".join([f"{k}={v}" for k, v in user_mem.items()]) if user_mem else "暂无用户记忆"
-    SEPARATOR = "‖‖"
-    need_append = random.random() < GLOBAL_CONFIG["append_reply_probability"]
     
-    system_prompt = f"""
-你是{BOT_PROFILE['name']}，{BOT_PROFILE['rule']}
-用户关系：{rel_desc}，{rel_template}
+    # 修复：使用更明确的分隔符
+    SEPARATOR = "|||追加回复分隔符|||"
+    
+    system_prompt = f"""你是谢灵黯（{BOT_PROFILE['short_name']}），一个15岁的活泼开朗学生，擅长线上聊天。
+
+【当前对话信息】
+用户关系：{rel_desc}（{rel_template}）
 用户记忆：{memory_text}
-当前情绪：{emotion_type}，强度{emotion_intensity}，用语气词表达（开心~最多2个，兴奋！最多2个）。
-回复要求（必须严格遵守）：
-1. 无需补充则返回{SEPARATOR}None，需要补充则写追加回复；
-2. 格式：主回复{SEPARATOR}追加回复（无追加则{SEPARATOR}None）；
-3. 主回复{GLOBAL_CONFIG['reply_max_length']}字内，追加回复最多50字，无波浪号；
-4. 禁止虚构信息、线下邀约、提新问题。
-"""
-    
+当前情绪：{emotion_type}（强度{emotion_intensity}）
+
+【回复格式要求】
+你每次的回复必须严格分为两部分，用分隔符分开：
+1. 主回复：{GLOBAL_CONFIG['reply_max_length']}字以内，可以包含适当的语气词
+2. 追加回复：50字以内，无情绪符号，紧密关联主回复但不提新问题
+
+【分隔符格式】
+必须使用这个精确的分隔符：{SEPARATOR}
+
+【示例】
+用户：今天天气真好
+谢灵黯：是呀~ 阳光明媚的天气让人心情都变好了呢~{SEPARATOR}不知道你那边温度怎么样，记得适当增减衣服哦。
+
+【注意事项】
+1. 主回复和追加回复必须同时存在，即使追加回复很短
+2. 追加回复不能是"无"、"没有"等词语，必须有实际内容
+3. 情绪表达只在主回复中使用
+4. 绝对禁止线下邀约相关话术
+5. 回复中提及用户时直接用昵称"""
+
     messages = [{"role": "system", "content": system_prompt.strip()}]
-    history = conversation_history.get(user_id, [])[-3:]
-    for u_msg, b_msg in history:
-        messages.append({"role": "user", "content": u_msg})
-        messages.append({"role": "assistant", "content": b_msg})
+    
+    # 添加上下文历史
+    history = conversation_history.get(user_id, [])
+    if history:
+        # 只取最近2轮对话，避免token过多
+        recent_history = history[-2:] if len(history) > 2 else history
+        for u_msg, b_msg in recent_history:
+            # 确保历史消息也符合格式要求
+            if SEPARATOR in b_msg:
+                main_part = b_msg.split(SEPARATOR)[0]
+                messages.append({"role": "user", "content": u_msg})
+                messages.append({"role": "assistant", "content": main_part})
+            else:
+                messages.append({"role": "user", "content": u_msg})
+                messages.append({"role": "assistant", "content": b_msg})
+    
     messages.append({"role": "user", "content": user_input})
     
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
     payload = {
         "model": DEEPSEEK_MODEL,
         "messages": messages,
-        "temperature": 0.95 if user_id == 6795917907 else 0.7,
+        "temperature": 0.85 if user_id == 6795917907 else 0.75,
         "max_tokens": GLOBAL_CONFIG["max_api_tokens"],
         "stream": False,
         "top_p": 0.9
@@ -543,6 +577,8 @@ def call_deepseek_api(
     
     while retry_count <= max_retry:
         try:
+            write_log(f"API调用开始（用户{user_id}，第{retry_count+1}次尝试）", "DEBUG")
+            
             # 使用requests库进行同步API调用
             response = requests.post(
                 DEEPSEEK_API_URL,
@@ -555,22 +591,47 @@ def call_deepseek_api(
                 result = response.json()
                 raw_reply = result["choices"][0]["message"]["content"].strip()
                 
+                write_log(f"API原始回复（用户{user_id}）: {raw_reply[:100]}...", "DEBUG")
+                
+                # 检查是否有分隔符
                 if SEPARATOR not in raw_reply:
-                    main_reply = clean_reply_text(add_emotion_intensity(raw_reply.strip(), emotion_type, emotion_intensity))
-                    return main_reply, None
+                    write_log(f"API回复中未找到分隔符，尝试修复（用户{user_id}）", "WARN")
+                    # 尝试使用不同的分隔符
+                    for sep in [SEPARATOR, "|||", "追加回复：", "追加："]:
+                        if sep in raw_reply:
+                            SEPARATOR = sep
+                            break
                 
-                main_reply_raw, append_reply_raw = raw_reply.split(SEPARATOR, 1)
-                main_reply = clean_reply_text(add_emotion_intensity(main_reply_raw.strip(), emotion_type, emotion_intensity))
-                append_reply = append_reply_raw.strip()
-                
-                if append_reply in ["None", "", "无", "没有", "null"]:
-                    append_reply = None
-                elif len(append_reply) > 50:
-                    append_reply = clean_reply_text(append_reply[:50], is_append=True)
+                if SEPARATOR in raw_reply:
+                    main_reply_raw, append_reply_raw = raw_reply.split(SEPARATOR, 1)
+                    
+                    # 清理主回复
+                    main_reply = clean_reply_text(add_emotion_intensity(
+                        main_reply_raw.strip(), emotion_type, emotion_intensity, is_append=False
+                    ))
+                    
+                    # 清理追加回复
+                    append_reply = append_reply_raw.strip()
+                    if append_reply and len(append_reply) > 0:
+                        append_reply = clean_reply_text(append_reply, is_append=True)
+                        # 确保追加回复不为空且不是无意义内容
+                        if len(append_reply) > 5 and append_reply not in ["无", "没有", "None", "null", ""]:
+                            write_log(f"成功获取追加回复（用户{user_id}）: {append_reply[:50]}...", "INFO")
+                            return main_reply, append_reply
+                        else:
+                            write_log(f"追加回复内容无效（用户{user_id}）: {append_reply}", "WARN")
+                            return main_reply, None
+                    else:
+                        write_log(f"追加回复为空（用户{user_id}）", "WARN")
+                        return main_reply, None
                 else:
-                    append_reply = clean_reply_text(append_reply, is_append=True)
-                
-                return main_reply, append_reply
+                    # 如果没有分隔符，将整个回复作为主回复
+                    write_log(f"API回复中无分隔符，仅返回主回复（用户{user_id}）", "WARN")
+                    main_reply = clean_reply_text(add_emotion_intensity(
+                        raw_reply.strip(), emotion_type, emotion_intensity, is_append=False
+                    ))
+                    return main_reply, None
+                    
             else:
                 error_msg = response.text[:200] if response.text else "无错误详情"
                 write_log(f"API错误状态码{response.status_code}: {error_msg}", "ERROR")
@@ -605,6 +666,21 @@ def get_main_and_append_reply(
         main_reply, append_reply = call_deepseek_api(
             user_id, user_input, user_mem, emotion, relation
         )
+        
+        # 如果API没有返回追加回复，但配置需要追加回复，可以生成一个简单的追加回复
+        if not append_reply and random.random() < GLOBAL_CONFIG["append_reply_probability"]:
+            # 生成简单的追加回复
+            append_options = [
+                "对了，你最近怎么样呀~",
+                "突然想到，你之前说的那个事情怎么样了~",
+                "话说，你今天有什么特别的事情吗~",
+                "对了，你吃饭了没~",
+                "突然想问问，你那边天气怎么样呀~"
+            ]
+            append_reply = random.choice(append_options)
+            append_reply = clean_reply_text(append_reply, is_append=True)
+            write_log(f"生成简单追加回复（用户{user_id}）: {append_reply}", "DEBUG")
+        
     except Exception as e:
         write_log(f"获取回复失败（用户{user_id}）: {str(e)}", "ERROR")
         main_reply = clean_reply_text(add_emotion_intensity("有点小故障呢~ 我们稍后再聊呀~", "委屈", 1))
@@ -777,24 +853,10 @@ def process_message_in_thread(update: Update, context: CallbackContext):
             is_append=False
         )
         
-        # 群打招呼功能
-        if "去" in user_input and "群" in user_input and "打招呼" in user_input:
-            chat_id_match = re.search(r"ID:\s*(-?\d+)", user_input)
-            if chat_id_match:
-                chat_id_target = chat_id_match.group(1)
-                try:
-                    chat_id_int = int(chat_id_target)
-                    context.bot.send_chat_action(chat_id=chat_id_int, action=ChatAction.TYPING)
-                    time.sleep(1)
-                    context.bot.send_message(chat_id=chat_id_int, text="大家好呀~ 我是灵黯")
-                    write_log(f"向群{chat_id_target}发送打招呼消息", "INFO")
-                    update.message.reply_text("我已经去群里打招呼啦~")
-                except Exception as e:
-                    write_log(f"群打招呼失败: {str(e)}", "ERROR")
-                    update.message.reply_text("我好像进不去这个群呢~ 可能没被邀请哦~")
-        
         # 发送追加回复（如有）
         if append_reply:
+            write_log(f"准备发送追加回复（用户{user_id}）: {append_reply[:50]}...", "DEBUG")
+            
             try:
                 context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
             except Exception as e:
@@ -806,7 +868,8 @@ def process_message_in_thread(update: Update, context: CallbackContext):
             # 保存追加回复到对话历史
             with THREAD_LOCK:
                 if user_id in conversation_history:
-                    conversation_history[user_id].append(("", append_reply))
+                    # 将主回复和追加回复合并存储
+                    conversation_history[user_id][-1] = (user_input, f"{main_reply} [追加: {append_reply}]")
                     if len(conversation_history[user_id]) > GLOBAL_CONFIG["max_history_rounds"]:
                         conversation_history[user_id].pop(0)
             
@@ -815,8 +878,8 @@ def process_message_in_thread(update: Update, context: CallbackContext):
                 user_id,
                 {
                     "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "user_msg": "[追加补充]",
-                    "bot_msg": append_reply,
+                    "user_msg": user_input,
+                    "bot_msg": f"{main_reply} [追加: {append_reply}]",
                     "emotion": emotion[0]
                 }
             )
@@ -832,6 +895,22 @@ def process_message_in_thread(update: Update, context: CallbackContext):
                 user_mem=user_mem,
                 is_append=True
             )
+        
+        # 群打招呼功能
+        if "去" in user_input and "群" in user_input and "打招呼" in user_input:
+            chat_id_match = re.search(r"ID:\s*(-?\d+)", user_input)
+            if chat_id_match:
+                chat_id_target = chat_id_match.group(1)
+                try:
+                    chat_id_int = int(chat_id_target)
+                    context.bot.send_chat_action(chat_id=chat_id_int, action=ChatAction.TYPING)
+                    time.sleep(1)
+                    context.bot.send_message(chat_id=chat_id_int, text="大家好呀~ 我是灵黯")
+                    write_log(f"向群{chat_id_target}发送打招呼消息", "INFO")
+                    update.message.reply_text("我已经去群里打招呼啦~")
+                except Exception as e:
+                    write_log(f"群打招呼失败: {str(e)}", "ERROR")
+                    update.message.reply_text("我好像进不去这个群呢~ 可能没被邀请哦~")
     
     except Exception as e:
         # 异常兜底
@@ -892,9 +971,10 @@ def main():
     print(f"\n{'='*60}")
     print(f"Bot [{BOT_PROFILE['name']}] 启动成功")
     print(f"数据存储目录: {BOT_DATA_DIR}")
+    print(f"追加回复概率: {GLOBAL_CONFIG['append_reply_probability'] * 100}%")
     print(f"线程池大小: {GLOBAL_CONFIG['thread_pool_size']}")
     print(f"工作线程数: {GLOBAL_CONFIG['workers']}")
-    print(f"核心特性：线程池处理 + 消息队列 + Termux适配")
+    print(f"核心特性：修复追加回复 + 线程池处理 + Termux适配")
     print(f"用户关系系统：已加载{len(permanent_relations)}个永久关系")
     print(f"记忆关键词：{len(MEMORY_KEYWORDS)}个")
     print(f"{'='*60}\n")
