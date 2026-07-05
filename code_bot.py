@@ -5,6 +5,7 @@ import asyncio
 import time
 import re
 import sys
+import threading
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
 import aiohttp
@@ -165,6 +166,7 @@ last_keep_alive_time: datetime = datetime.now()
 EMOTION_CONFIG = {}
 SENSITIVE_WORDS = []
 MEMORY_KEYWORDS = []
+LOOP_CACHE = {}  # 缓存每个线程的事件循环（解决Termux问题）
 
 # ====================== 初始化工具函数 ======================
 def load_config_file(file_path: str, default_data: dict) -> dict:
@@ -189,6 +191,24 @@ def init_all_files():
         if not os.path.exists(file_path):
             with open(file_path, "w", encoding="utf-8") as f:
                 json.dump({}, f, ensure_ascii=False, indent=2)
+
+# ====================== 线程安全工具函数 ======================
+def get_thread_safe_loop() -> asyncio.AbstractEventLoop:
+    """为当前线程获取或创建事件循环（适配Termux多线程环境）"""
+    thread_id = threading.get_ident()
+    if thread_id not in LOOP_CACHE:
+        # 创建新循环并后台启动
+        loop = asyncio.new_event_loop()
+        LOOP_CACHE[thread_id] = loop
+        
+        def start_loop(loop):
+            asyncio.set_event_loop(loop)
+            loop.run_forever()
+        
+        # 守护线程运行循环，不阻塞主进程
+        loop_thread = threading.Thread(target=start_loop, args=(loop,), daemon=True)
+        loop_thread.start()
+    return LOOP_CACHE[thread_id]
 
 # ====================== 长上下文记忆功能 ======================
 def load_user_global_memory(user_id: int) -> list:
@@ -647,7 +667,7 @@ def save_memory_modify_records():
     except Exception as e:
         write_log(f"保存记忆修改记录失败: {str(e)}", "ERROR")
 
-# ====================== 核心消息处理（持续监听修复） ======================
+# ====================== 核心消息处理（终极稳定版） ======================
 async def _handle_message_async(update: Update, context: CallbackContext):
     user = update.effective_user
     user_id = user.id
@@ -795,16 +815,19 @@ async def _handle_message_async(update: Update, context: CallbackContext):
 def handle_message(update: Update, context: CallbackContext):
     if is_rate_limited():
         return
-    # 线程安全运行异步函数，确保持续监听
-    asyncio.run_coroutine_threadsafe(_handle_message_async(update, context), asyncio.get_event_loop())
+    # 线程安全获取事件循环，解决Termux无循环报错
+    loop = get_thread_safe_loop()
+    # 提交异步任务到循环（后台执行，不阻塞）
+    asyncio.run_coroutine_threadsafe(_handle_message_async(update, context), loop)
     backup_data()
 
-# ====================== 启动命令处理 ======================
+# ====================== 启动命令处理（终极稳定版） ======================
 async def start_async(update: Update, context: CallbackContext):
     await update.message.reply_text("你好呀，我是灵黯~ 很高兴认识你！")
 
 def start(update: Update, context: CallbackContext):
-    asyncio.run_coroutine_threadsafe(start_async(update, context), asyncio.get_event_loop())
+    loop = get_thread_safe_loop()
+    asyncio.run_coroutine_threadsafe(start_async(update, context), loop)
 
 # ====================== 主函数 ======================
 def main():
@@ -825,10 +848,10 @@ def main():
     keep_alive(updater, job_queue)
     write_log(f"t.me连接保活机制已启动，保活间隔：{GLOBAL_CONFIG['keep_alive_interval']}秒", "INFO")
     
-    # 启动Bot（缩短轮询间隔，提升实时性）
+    # 启动Bot（优化轮询间隔，提升实时性）
     print(f"Bot [{BOT_PROFILE['name']}] 已启动，监听t.me消息中...")
     print(f"数据存储目录: {BOT_DATA_DIR}")
-    print(f"核心特性：持续监听+智能追加回复（30%概率）+用户记忆+API成本控制")
+    print(f"核心特性：Termux适配+持续监听+智能追加回复+用户记忆+API成本控制")
     updater.start_polling(poll_interval=0.5)
     updater.idle()
 
