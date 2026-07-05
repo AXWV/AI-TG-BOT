@@ -5,6 +5,7 @@ import time
 import re
 import sys
 import threading
+import concurrent.futures
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
 import requests
@@ -53,9 +54,11 @@ GLOBAL_CONFIG = {
     "append_reply_probability": 0.3,
     "max_api_tokens": 200,
     "api_retry_count": 2,
-    "api_timeout": 30,
-    "task_timeout": 25,
-    "poll_interval": 0.8
+    "api_timeout": 15,  # 缩短超时时间
+    "task_timeout": 20,
+    "poll_interval": 0.5,  # 缩短轮询间隔
+    "workers": 4,  # 增加工作线程
+    "thread_pool_size": 10  # 线程池大小
 }
 
 # 谢灵黯人设配置
@@ -168,6 +171,13 @@ EMOTION_CONFIG = {}
 SENSITIVE_WORDS = []
 MEMORY_KEYWORDS = []
 THREAD_LOCK = threading.Lock()
+
+# ====================== 线程池 ======================
+# 创建线程池用于并发处理消息
+thread_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=GLOBAL_CONFIG["thread_pool_size"],
+    thread_name_prefix="BotWorker"
+)
 
 # ====================== 初始化工具函数 ======================
 def load_config_file(file_path: str, default_data: dict) -> dict:
@@ -562,7 +572,8 @@ def call_deepseek_api(
                 
                 return main_reply, append_reply
             else:
-                write_log(f"API错误状态码{response.status_code}: {response.text}", "ERROR")
+                error_msg = response.text[:200] if response.text else "无错误详情"
+                write_log(f"API错误状态码{response.status_code}: {error_msg}", "ERROR")
                 retry_count += 1
                 time.sleep(0.5 * (retry_count + 1))  # 递增等待
                 
@@ -654,8 +665,8 @@ def save_memory_modify_records():
         write_log(f"保存记忆修改记录失败: {str(e)}", "ERROR")
 
 # ====================== 核心消息处理 ======================
-def handle_message(update: Update, context: CallbackContext):
-    """同步消息处理主函数"""
+def process_message_in_thread(update: Update, context: CallbackContext):
+    """在线程中处理消息的核心逻辑"""
     if is_rate_limited():
         write_log("消息被限流", "WARN")
         return
@@ -667,7 +678,7 @@ def handle_message(update: Update, context: CallbackContext):
         chat = update.effective_chat
         chat_id = chat.id
         
-        write_log(f"收到消息 from {user_id}: {user_input[:50]}...", "DEBUG")
+        write_log(f"线程处理消息 from {user_id}: {user_input[:50]}...", "DEBUG")
         
         # 黑名单过滤
         if user_id in user_blacklist:
@@ -834,6 +845,34 @@ def handle_message(update: Update, context: CallbackContext):
     finally:
         backup_data()
 
+def handle_message(update: Update, context: CallbackContext):
+    """主消息处理函数 - 将消息提交到线程池"""
+    try:
+        # 将消息处理任务提交到线程池
+        future = thread_pool.submit(process_message_in_thread, update, context)
+        
+        # 添加回调处理异常
+        def callback_done(f):
+            try:
+                f.result(timeout=GLOBAL_CONFIG["task_timeout"])
+            except concurrent.futures.TimeoutError:
+                write_log(f"消息处理超时（用户{update.effective_user.id}）", "ERROR")
+            except Exception as e:
+                write_log(f"线程任务异常: {str(e)}", "ERROR")
+        
+        future.add_done_callback(callback_done)
+        
+        # 立即返回，不阻塞主线程
+        write_log(f"消息已提交到线程池处理（用户{update.effective_user.id}）", "DEBUG")
+        
+    except Exception as e:
+        write_log(f"消息提交失败: {str(e)}", "ERROR")
+        try:
+            error_reply = clean_reply_text(add_emotion_intensity("好像有点卡~ 等一下再聊呀~", "委屈", 1))
+            update.message.reply_text(error_reply)
+        except Exception as e2:
+            write_log(f"错误回复发送失败: {str(e2)}", "ERROR")
+
 # ====================== 启动命令处理 ======================
 def start(update: Update, context: CallbackContext):
     """处理/start命令"""
@@ -853,13 +892,19 @@ def main():
     print(f"\n{'='*60}")
     print(f"Bot [{BOT_PROFILE['name']}] 启动成功")
     print(f"数据存储目录: {BOT_DATA_DIR}")
-    print(f"核心特性：同步API调用 + 完整功能 + Termux适配")
+    print(f"线程池大小: {GLOBAL_CONFIG['thread_pool_size']}")
+    print(f"工作线程数: {GLOBAL_CONFIG['workers']}")
+    print(f"核心特性：线程池处理 + 消息队列 + Termux适配")
     print(f"用户关系系统：已加载{len(permanent_relations)}个永久关系")
     print(f"记忆关键词：{len(MEMORY_KEYWORDS)}个")
     print(f"{'='*60}\n")
     
-    # 创建Updater
-    updater = Updater(token=TELEGRAM_BOT_TOKEN, use_context=True)
+    # 创建Updater，使用更多工作线程
+    updater = Updater(
+        token=TELEGRAM_BOT_TOKEN, 
+        use_context=True,
+        workers=GLOBAL_CONFIG["workers"]
+    )
     
     # 获取调度器和任务队列
     dp = updater.dispatcher
@@ -877,15 +922,21 @@ def main():
     print("Bot开始监听消息...")
     print("按 Ctrl+C 停止运行\n")
     
-    # 开始轮询 - 修复参数问题
+    # 开始轮询 - 使用更积极的参数
     updater.start_polling(
         poll_interval=GLOBAL_CONFIG["poll_interval"],
         timeout=10,
-        drop_pending_updates=True
+        drop_pending_updates=True,
+        bootstrap_retries=-1,
+        read_latency=2.0,
+        allowed_updates=['message']
     )
     
     # 保持运行
     updater.idle()
+    
+    # 关闭线程池
+    thread_pool.shutdown(wait=True)
 
 if __name__ == "__main__":
     main()
