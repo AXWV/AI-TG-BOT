@@ -59,8 +59,8 @@ GLOBAL_CONFIG = {
     "poll_interval": 0.5,
     "workers": 4,
     "thread_pool_size": 10,
-    "max_backup_files": 5,  # 最大备份文件数量
-    "backup_compression": True  # 是否压缩备份
+    "max_backup_files": 5,
+    "backup_compression": True
 }
 
 # 谢灵黯人设配置
@@ -81,6 +81,15 @@ BOT_PROFILE = {
 4. 只和AXWV（6795917907）保持男女朋友关系，称呼对方为老公，永不改变；
 5. 群聊仅被@或提及名字时才回复，私聊正常回复；
 6. 会主动记忆用户的兴趣爱好、喜欢的影视音乐等信息，并融入后续对话；
+
+【回复格式要求】
+你必须按照以下格式回复，不能有任何偏差：
+
+主回复‖追加回复
+
+示例：
+用户：今天天气真好
+谢灵黯：是呀~ 阳光明媚的天气让人心情都变好了呢~‖对了，你那边温度怎么样？
 
 【追加回复规则】
 1. 追加回复绝对不使用波浪号~、感叹号！等情绪符号；
@@ -365,96 +374,46 @@ def is_rate_limited() -> bool:
     return False
 
 def backup_data():
-    """优化后的备份函数：跳过backups目录，避免重复备份"""
     global last_backup_time
     now = datetime.now()
     if now - last_backup_time < timedelta(hours=GLOBAL_CONFIG["backup_interval_hours"]):
         return
     
     try:
-        # 生成备份文件名（日期+时间+随机字符串）
         random_str = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=6))
         backup_filename = f"backup_{now.strftime('%Y%m%d_%H%M%S')}_{random_str}.zip"
         backup_path = os.path.join(BACKUP_DIR, backup_filename)
         
-        # 获取backups目录的绝对路径，用于排除
         backups_abs_path = os.path.abspath(BACKUP_DIR)
         write_log(f"开始备份数据，跳过目录: {backups_abs_path}", "INFO")
         
-        if GLOBAL_CONFIG["backup_compression"]:
-            import zipfile
-            # 创建压缩备份
-            with zipfile.ZipFile(backup_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                # 遍历BOT_DATA_DIR下的所有文件和目录
-                for root, dirs, files in os.walk(BOT_DATA_DIR):
-                    # 计算当前目录的绝对路径
-                    current_abs_path = os.path.abspath(root)
-                    
-                    # 跳过backups目录及其子目录
-                    if current_abs_path.startswith(backups_abs_path):
-                        write_log(f"跳过目录: {root}", "DEBUG")
-                        continue
-                    
-                    # 跳过备份文件本身
-                    if os.path.commonpath([current_abs_path, os.path.abspath(backup_path)]) == os.path.dirname(os.path.abspath(backup_path)):
-                        continue
-                    
-                    for file in files:
-                        # 跳过临时文件和日志文件（可选）
-                        if file.endswith('.tmp') or file.endswith('.log.bak'):
-                            continue
-                        
-                        file_path = os.path.join(root, file)
-                        try:
-                            # 计算相对路径
-                            arcname = os.path.relpath(file_path, BOT_DATA_DIR)
-                            zipf.write(file_path, arcname)
-                        except Exception as e:
-                            write_log(f"添加文件到备份失败 {file_path}: {str(e)}", "WARN")
-            
-            backup_size = os.path.getsize(backup_path) / (1024 * 1024)  # MB
-            write_log(f"压缩备份完成: {backup_path} ({backup_size:.2f} MB)", "INFO")
-        else:
-            # 不压缩的备份：直接复制文件
-            import shutil
-            # 创建备份目录
-            backup_dir = backup_path.replace('.zip', '')
-            os.makedirs(backup_dir, exist_ok=True)
-            
+        import zipfile
+        with zipfile.ZipFile(backup_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
             for root, dirs, files in os.walk(BOT_DATA_DIR):
                 current_abs_path = os.path.abspath(root)
                 
-                # 跳过backups目录
                 if current_abs_path.startswith(backups_abs_path):
+                    write_log(f"跳过目录: {root}", "DEBUG")
                     continue
                 
-                # 计算目标目录
-                rel_path = os.path.relpath(root, BOT_DATA_DIR)
-                target_dir = os.path.join(backup_dir, rel_path)
-                os.makedirs(target_dir, exist_ok=True)
+                if os.path.commonpath([current_abs_path, os.path.abspath(backup_path)]) == os.path.dirname(os.path.abspath(backup_path)):
+                    continue
                 
                 for file in files:
-                    if file.endswith('.tmp'):
+                    if file.endswith('.tmp') or file.endswith('.log.bak'):
                         continue
                     
-                    src_file = os.path.join(root, file)
-                    dst_file = os.path.join(target_dir, file)
+                    file_path = os.path.join(root, file)
                     try:
-                        shutil.copy2(src_file, dst_file)
+                        arcname = os.path.relpath(file_path, BOT_DATA_DIR)
+                        zipf.write(file_path, arcname)
                     except Exception as e:
-                        write_log(f"复制文件失败 {src_file}: {str(e)}", "WARN")
-            
-            # 将目录压缩为zip（可选）
-            if True:  # 默认还是压缩
-                shutil.make_archive(backup_dir, 'zip', backup_dir)
-                shutil.rmtree(backup_dir)  # 删除临时目录
-                backup_path = backup_dir + '.zip'
-                backup_size = os.path.getsize(backup_path) / (1024 * 1024)
-                write_log(f"目录备份完成: {backup_path} ({backup_size:.2f} MB)", "INFO")
+                        write_log(f"添加文件到备份失败 {file_path}: {str(e)}", "WARN")
+        
+        backup_size = os.path.getsize(backup_path) / (1024 * 1024)
+        write_log(f"压缩备份完成: {backup_path} ({backup_size:.2f} MB)", "INFO")
         
         last_backup_time = now
-        
-        # 清理旧的备份文件
         cleanup_old_backups()
         
     except ImportError:
@@ -463,12 +422,10 @@ def backup_data():
         write_log(f"数据备份失败: {str(e)}", "ERROR")
 
 def cleanup_old_backups():
-    """清理旧的备份文件，只保留最新的几个"""
     try:
         if not os.path.exists(BACKUP_DIR):
             return
         
-        # 获取所有备份文件
         backup_files = []
         for f in os.listdir(BACKUP_DIR):
             file_path = os.path.join(BACKUP_DIR, f)
@@ -478,9 +435,8 @@ def cleanup_old_backups():
         if len(backup_files) <= GLOBAL_CONFIG["max_backup_files"]:
             return
         
-        # 按修改时间排序，删除最旧的文件
-        backup_files.sort(key=lambda x: x[1])  # 按修改时间升序
-        files_to_delete = backup_files[:-GLOBAL_CONFIG["max_backup_files"]]  # 保留最新的N个
+        backup_files.sort(key=lambda x: x[1])
+        files_to_delete = backup_files[:-GLOBAL_CONFIG["max_backup_files"]]
         
         for file_path, _ in files_to_delete:
             try:
@@ -606,7 +562,7 @@ def clean_reply_text(text: str, is_append: bool = False) -> str:
         text = text[:cut_pos].strip()
     return text
 
-# ====================== 核心API调用 ======================
+# ====================== 核心API调用（修复解析逻辑） ======================
 def call_deepseek_api(
     user_id: int,
     user_input: str,
@@ -621,7 +577,9 @@ def call_deepseek_api(
     rel_desc = BOT_PROFILE["relationship_desc"].get(str(user_id), final_relation) if user_id == 6795917907 else final_relation
     memory_text = "用户记忆：" + "；".join([f"{k}={v}" for k, v in user_mem.items()]) if user_mem else "暂无用户记忆"
     
-    SEPARATOR = "|||追加回复分隔符|||"
+    # 使用更明确的分隔符，并明确要求格式
+    MAIN_SEPARATOR = "‖"  # 统一使用这个分隔符
+    ALT_SEPARATORS = ["‖", "追加回复：", "追加：", "[追加:", "(追加:", "追加回复:", "补充：", "补充:"]
     
     system_prompt = f"""你是谢灵黯（灵黯），一个15岁的活泼开朗学生，擅长线上聊天。
 
@@ -631,23 +589,26 @@ def call_deepseek_api(
 当前情绪：{emotion_type}（强度{emotion_intensity}）
 
 【回复格式要求】
-你每次的回复必须严格分为两部分，用分隔符分开：
+你每次的回复必须严格分为两部分，用这个分隔符分开：{MAIN_SEPARATOR}
+格式：主回复{MAIN_SEPARATOR}追加回复
+
+【规则】
 1. 主回复：{GLOBAL_CONFIG['reply_max_length']}字以内，可以包含适当的语气词
 2. 追加回复：50字以内，无情绪符号，紧密关联主回复但不提新问题
-
-【分隔符格式】
-必须使用这个精确的分隔符：{SEPARATOR}
+3. 必须包含分隔符{MAIN_SEPARATOR}，不能缺少
+4. 追加回复不能是"无"、"没有"等词语，必须有实际内容
+5. 绝对禁止线下邀约相关话术
 
 【示例】
 用户：今天天气真好
-谢灵黯：是呀~ 阳光明媚的天气让人心情都变好了呢~{SEPARATOR}不知道你那边温度怎么样，记得适当增减衣服哦。
+谢灵黯：是呀~ 阳光明媚的天气让人心情都变好了呢~{MAIN_SEPARATOR}对了，你那边温度怎么样？
 
-【注意事项】
-1. 主回复和追加回复必须同时存在，即使追加回复很短
-2. 追加回复不能是"无"、"没有"等词语，必须有实际内容
-3. 情绪表达只在主回复中使用
-4. 绝对禁止线下邀约相关话术
-5. 回复中提及用户时直接用昵称"""
+用户：我刚看完电影
+谢灵黯：哇~ 看的什么电影呀~{MAIN_SEPARATOR}那部电影的评价怎么样，你给几分呀？
+
+【特别强调】
+必须使用分隔符：{MAIN_SEPARATOR}
+如果不知道追加回复说什么，可以说一些关心的话，但不能省略分隔符。"""
 
     messages = [{"role": "system", "content": system_prompt.strip()}]
     
@@ -655,8 +616,9 @@ def call_deepseek_api(
     if history:
         recent_history = history[-2:] if len(history) > 2 else history
         for u_msg, b_msg in recent_history:
-            if SEPARATOR in b_msg:
-                main_part = b_msg.split(SEPARATOR)[0]
+            # 从历史中移除追加标记
+            if " [追加: " in b_msg:
+                main_part = b_msg.split(" [追加: ")[0]
                 messages.append({"role": "user", "content": u_msg})
                 messages.append({"role": "assistant", "content": main_part})
             else:
@@ -693,40 +655,75 @@ def call_deepseek_api(
                 result = response.json()
                 raw_reply = result["choices"][0]["message"]["content"].strip()
                 
-                write_log(f"API原始回复（用户{user_id}）: {raw_reply[:100]}...", "DEBUG")
+                write_log(f"API原始回复（用户{user_id}）: {raw_reply}", "DEBUG")
                 
-                if SEPARATOR not in raw_reply:
-                    write_log(f"API回复中未找到分隔符，尝试修复（用户{user_id}）", "WARN")
-                    for sep in [SEPARATOR, "|||", "追加回复：", "追加："]:
-                        if sep in raw_reply:
-                            SEPARATOR = sep
+                # 解析回复，尝试多种分隔符
+                main_reply_raw = ""
+                append_reply_raw = ""
+                found_separator = False
+                
+                # 首先检查主分隔符
+                if MAIN_SEPARATOR in raw_reply:
+                    parts = raw_reply.split(MAIN_SEPARATOR, 1)
+                    if len(parts) == 2:
+                        main_reply_raw = parts[0].strip()
+                        append_reply_raw = parts[1].strip()
+                        found_separator = True
+                        write_log(f"使用主分隔符解析成功", "DEBUG")
+                
+                # 如果没有找到，尝试其他分隔符
+                if not found_separator:
+                    for sep in ALT_SEPARATORS:
+                        if sep != MAIN_SEPARATOR and sep in raw_reply:
+                            parts = raw_reply.split(sep, 1)
+                            if len(parts) == 2:
+                                main_reply_raw = parts[0].strip()
+                                append_reply_raw = parts[1].strip()
+                                found_separator = True
+                                write_log(f"使用替代分隔符'{sep}'解析成功", "DEBUG")
+                                break
+                
+                # 如果还是没有找到，检查括号格式的追加回复
+                if not found_separator:
+                    bracket_patterns = [
+                        r"\[追加[:：]\s*(.+?)\]",
+                        r"\(追加[:：]\s*(.+?)\)",
+                        r"追加[:：]\s*(.+?)$"
+                    ]
+                    
+                    for pattern in bracket_patterns:
+                        match = re.search(pattern, raw_reply, re.IGNORECASE)
+                        if match:
+                            append_reply_raw = match.group(1).strip()
+                            main_reply_raw = re.sub(pattern, "", raw_reply).strip()
+                            found_separator = True
+                            write_log(f"使用括号模式解析成功: {append_reply_raw}", "DEBUG")
                             break
                 
-                if SEPARATOR in raw_reply:
-                    main_reply_raw, append_reply_raw = raw_reply.split(SEPARATOR, 1)
-                    
+                if found_separator and main_reply_raw and append_reply_raw:
+                    # 清理主回复
                     main_reply = clean_reply_text(add_emotion_intensity(
-                        main_reply_raw.strip(), emotion_type, emotion_intensity, is_append=False
+                        main_reply_raw, emotion_type, emotion_intensity, is_append=False
                     ))
                     
+                    # 清理追加回复
                     append_reply = append_reply_raw.strip()
                     if append_reply and len(append_reply) > 0:
                         append_reply = clean_reply_text(append_reply, is_append=True)
-                        if len(append_reply) > 5 and append_reply not in ["无", "没有", "None", "null", ""]:
-                            write_log(f"成功获取追加回复（用户{user_id}）: {append_reply[:50]}...", "INFO")
+                        if len(append_reply) > 3 and append_reply.lower() not in ["无", "没有", "none", "null", ""]:
+                            write_log(f"成功解析追加回复（用户{user_id}）: {append_reply[:50]}...", "INFO")
                             return main_reply, append_reply
                         else:
                             write_log(f"追加回复内容无效（用户{user_id}）: {append_reply}", "WARN")
-                            return main_reply, None
                     else:
                         write_log(f"追加回复为空（用户{user_id}）", "WARN")
-                        return main_reply, None
-                else:
-                    write_log(f"API回复中无分隔符，仅返回主回复（用户{user_id}）", "WARN")
-                    main_reply = clean_reply_text(add_emotion_intensity(
-                        raw_reply.strip(), emotion_type, emotion_intensity, is_append=False
-                    ))
-                    return main_reply, None
+                
+                # 如果解析失败或没有追加回复
+                write_log(f"无法解析追加回复，仅返回主回复（用户{user_id}）", "WARN")
+                main_reply = clean_reply_text(add_emotion_intensity(
+                    raw_reply.strip(), emotion_type, emotion_intensity, is_append=False
+                ))
+                return main_reply, None
                     
             else:
                 error_msg = response.text[:200] if response.text else "无错误详情"
@@ -761,13 +758,14 @@ def get_main_and_append_reply(
             user_id, user_input, user_mem, emotion, relation
         )
         
+        # 如果API没有返回追加回复，但有需要，生成简单追加回复
         if not append_reply and random.random() < GLOBAL_CONFIG["append_reply_probability"]:
             append_options = [
-                "对了，你最近怎么样呀~",
-                "突然想到，你之前说的那个事情怎么样了~",
-                "话说，你今天有什么特别的事情吗~",
-                "对了，你吃饭了没~",
-                "突然想问问，你那边天气怎么样呀~"
+                "对了，你最近怎么样呀",
+                "突然想到，你之前说的那个事情怎么样了",
+                "话说，你今天有什么特别的事情吗",
+                "对了，你吃饭了没",
+                "突然想问问，你那边天气怎么样呀"
             ]
             append_reply = random.choice(append_options)
             append_reply = clean_reply_text(append_reply, is_append=True)
@@ -933,7 +931,7 @@ def process_message_in_thread(update: Update, context: CallbackContext):
         )
         
         if append_reply:
-            write_log(f"准备发送追加回复（用户{user_id}）: {append_reply[:50]}...", "DEBUG")
+            write_log(f"准备发送追加回复（用户{user_id}）: {append_reply}", "DEBUG")
             
             try:
                 context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
@@ -953,7 +951,7 @@ def process_message_in_thread(update: Update, context: CallbackContext):
             save_user_global_memory(
                 user_id,
                 {
-                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "time": datetime.now().strftime("%Y-%m-d %H:%M:%S"),
                     "user_msg": user_input,
                     "bot_msg": f"{main_reply} [追加: {append_reply}]",
                     "emotion": emotion[0]
@@ -1034,11 +1032,11 @@ def main():
     init_all_files()
     load_all_data()
     write_log("Bot启动，所有数据加载完成", "INFO")
-    
     print(f"\n{'='*60}")
     print(f"Bot [{BOT_PROFILE['name']}] 启动成功")
     print(f"数据存储目录: {BOT_DATA_DIR}")
     print(f"备份优化：跳过backups目录，最多保留{GLOBAL_CONFIG['max_backup_files']}个备份")
+    print(f"追加回复解析：强化分隔符识别，使用'‖'作为主分隔符")
     print(f"追加回复概率: {GLOBAL_CONFIG['append_reply_probability'] * 100}%")
     print(f"线程池大小: {GLOBAL_CONFIG['thread_pool_size']}")
     print(f"工作线程数: {GLOBAL_CONFIG['workers']}")
