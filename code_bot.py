@@ -10,10 +10,10 @@ from typing import Dict, List, Tuple, Optional
 import requests
 from telegram import Update, Chat, User, ChatAction
 from telegram.ext import (
-    Application,
+    Updater,
     CommandHandler,
     MessageHandler,
-    filters,
+    Filters,
     CallbackContext,
     JobQueue
 )
@@ -371,12 +371,12 @@ def backup_data():
         write_log(f"数据备份失败: {str(e)}", "ERROR")
 
 # ====================== t.me连接保活机制 ======================
-async def keep_alive(context: CallbackContext):
+def keep_alive(context: CallbackContext):
     global last_keep_alive_time
     now = datetime.now()
     try:
         if (now - last_keep_alive_time).total_seconds() >= GLOBAL_CONFIG["keep_alive_interval"]:
-            await context.bot.get_me(timeout=GLOBAL_CONFIG["keep_alive_timeout"])
+            context.bot.get_me(timeout=GLOBAL_CONFIG["keep_alive_timeout"])
             last_keep_alive_time = now
             write_log(f"t.me连接保活成功 - 当前时间：{now.strftime('%Y-%m-%d %H:%M:%S')}", "DEBUG")
     except Exception as e:
@@ -385,7 +385,7 @@ async def keep_alive(context: CallbackContext):
         while retry_count < GLOBAL_CONFIG["reconnect_attempts"]:
             try:
                 time.sleep(2 ** retry_count)
-                await context.bot.get_me(timeout=GLOBAL_CONFIG["keep_alive_timeout"])
+                context.bot.get_me(timeout=GLOBAL_CONFIG["keep_alive_timeout"])
                 last_keep_alive_time = datetime.now()
                 write_log(f"t.me连接重试成功（第{retry_count+1}次）", "INFO")
                 break
@@ -579,6 +579,28 @@ def call_deepseek_api(
     main_reply = clean_reply_text(add_emotion_intensity("网络有点卡呀~ 我们换个话题聊聊好不好~", "委屈", 1))
     return main_reply, None
 
+def get_main_and_append_reply(
+    user_id: int,
+    user_input: str,
+    user_mem: dict,
+    emotion: Tuple[str, int],
+    relation: str
+) -> Tuple[str, Optional[str], float, float]:
+    """获取主回复和追加回复"""
+    main_delay = round(random.uniform(*GLOBAL_CONFIG["typing_delay_range"]), 1)
+    append_delay = round(random.uniform(*GLOBAL_CONFIG["append_reply_delay_range"]), 1)
+    
+    try:
+        main_reply, append_reply = call_deepseek_api(
+            user_id, user_input, user_mem, emotion, relation
+        )
+    except Exception as e:
+        write_log(f"获取回复失败（用户{user_id}）: {str(e)}", "ERROR")
+        main_reply = clean_reply_text(add_emotion_intensity("有点小故障呢~ 我们稍后再聊呀~", "委屈", 1))
+        append_reply = None
+    
+    return main_reply, append_reply, main_delay, append_delay
+
 # ====================== 数据加载/保存 ======================
 def load_all_data():
     global user_blacklist, conversation_history, permanent_relations, memory_modify_records
@@ -632,8 +654,8 @@ def save_memory_modify_records():
         write_log(f"保存记忆修改记录失败: {str(e)}", "ERROR")
 
 # ====================== 核心消息处理 ======================
-async def handle_message(update: Update, context: CallbackContext):
-    """异步消息处理主函数"""
+def handle_message(update: Update, context: CallbackContext):
+    """同步消息处理主函数"""
     if is_rate_limited():
         write_log("消息被限流", "WARN")
         return
@@ -655,14 +677,14 @@ async def handle_message(update: Update, context: CallbackContext):
         # 超长消息过滤
         if len(user_input) > GLOBAL_CONFIG["max_user_input_length"]:
             reply = clean_reply_text(add_emotion_intensity("你的消息有点长呀~ 精简一点告诉我好不好~", "撒娇", 1))
-            await update.message.reply_text(reply)
+            update.message.reply_text(reply)
             write_log(f"用户{user_id}发送超长消息（{len(user_input)}字），已拒绝", "WARN")
             return
         
         # 敏感词过滤
         if check_sensitive_words(user_input):
             reply = clean_reply_text(add_emotion_intensity("这个话题我不太想聊呢~ 换个别的吧~", "委屈", 1))
-            await update.message.reply_text(reply)
+            update.message.reply_text(reply)
             write_log(f"用户{user_id}发送敏感内容: {user_input}", "WARN")
             return
         
@@ -672,7 +694,7 @@ async def handle_message(update: Update, context: CallbackContext):
             need_reply = True
         else:
             chat_type = f"群聊({chat.title})"
-            bot_username = (await context.bot.get_me()).username
+            bot_username = context.bot.username
             need_reply = (f"@{bot_username}" in user_input) or (BOT_PROFILE["name"] in user_input) or (BOT_PROFILE["short_name"] in user_input)
         
         if not need_reply:
@@ -682,7 +704,7 @@ async def handle_message(update: Update, context: CallbackContext):
         # 记忆管理（删除/修改）
         memory_manage_reply = manage_user_memory(user_id, user_input)
         if memory_manage_reply:
-            await update.message.reply_text(memory_manage_reply)
+            update.message.reply_text(memory_manage_reply)
             save_memory_modify_records()
             write_log(f"用户{user_id}执行记忆管理: {user_input} -> 回复: {memory_manage_reply}", "INFO")
             return
@@ -698,22 +720,20 @@ async def handle_message(update: Update, context: CallbackContext):
         
         # 模拟打字状态
         try:
-            await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+            context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
         except Exception as e:
             write_log(f"发送打字状态失败: {str(e)}", "WARN")
         
-        await asyncio.sleep(0.5)
+        time.sleep(0.5)
         
-        # 获取主回复和追加回复（使用同步API调用，但通过线程池避免阻塞事件循环）
-        loop = asyncio.get_event_loop()
-        main_reply, append_reply, main_delay, append_delay = await loop.run_in_executor(
-            None,
-            lambda: get_main_and_append_reply(user_id, user_input, user_mem, emotion, relation)
+        # 获取主回复和追加回复
+        main_reply, append_reply, main_delay, append_delay = get_main_and_append_reply(
+            user_id, user_input, user_mem, emotion, relation
         )
         
         # 发送主回复
-        await asyncio.sleep(main_delay)
-        await update.message.reply_text(main_reply)
+        time.sleep(main_delay)
+        update.message.reply_text(main_reply)
         
         # 保存对话历史和全局记忆
         with THREAD_LOCK:
@@ -753,24 +773,24 @@ async def handle_message(update: Update, context: CallbackContext):
                 chat_id_target = chat_id_match.group(1)
                 try:
                     chat_id_int = int(chat_id_target)
-                    await context.bot.send_chat_action(chat_id=chat_id_int, action=ChatAction.TYPING)
-                    await asyncio.sleep(1)
-                    await context.bot.send_message(chat_id=chat_id_int, text="大家好呀~ 我是灵黯")
+                    context.bot.send_chat_action(chat_id=chat_id_int, action=ChatAction.TYPING)
+                    time.sleep(1)
+                    context.bot.send_message(chat_id=chat_id_int, text="大家好呀~ 我是灵黯")
                     write_log(f"向群{chat_id_target}发送打招呼消息", "INFO")
-                    await update.message.reply_text("我已经去群里打招呼啦~")
+                    update.message.reply_text("我已经去群里打招呼啦~")
                 except Exception as e:
                     write_log(f"群打招呼失败: {str(e)}", "ERROR")
-                    await update.message.reply_text("我好像进不去这个群呢~ 可能没被邀请哦~")
+                    update.message.reply_text("我好像进不去这个群呢~ 可能没被邀请哦~")
         
         # 发送追加回复（如有）
         if append_reply:
             try:
-                await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+                context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
             except Exception as e:
                 write_log(f"发送追加打字状态失败: {str(e)}", "WARN")
             
-            await asyncio.sleep(append_delay)
-            await update.message.reply_text(append_reply)
+            time.sleep(append_delay)
+            update.message.reply_text(append_reply)
             
             # 保存追加回复到对话历史
             with THREAD_LOCK:
@@ -807,39 +827,18 @@ async def handle_message(update: Update, context: CallbackContext):
         write_log(f"消息处理异常（用户{user_id}）: {str(e)}", "ERROR")
         try:
             error_reply = clean_reply_text(add_emotion_intensity("刚才出了点小问题~ 我们重新聊呀~", "委屈", 1))
-            await update.message.reply_text(error_reply)
+            update.message.reply_text(error_reply)
         except Exception as e2:
             write_log(f"异常回复发送失败: {str(e2)}", "ERROR")
+    
     finally:
         backup_data()
 
-def get_main_and_append_reply(
-    user_id: int,
-    user_input: str,
-    user_mem: dict,
-    emotion: Tuple[str, int],
-    relation: str
-) -> Tuple[str, Optional[str], float, float]:
-    """获取主回复和追加回复（同步版本）"""
-    main_delay = round(random.uniform(*GLOBAL_CONFIG["typing_delay_range"]), 1)
-    append_delay = round(random.uniform(*GLOBAL_CONFIG["append_reply_delay_range"]), 1)
-    
-    try:
-        main_reply, append_reply = call_deepseek_api(
-            user_id, user_input, user_mem, emotion, relation
-        )
-    except Exception as e:
-        write_log(f"获取回复失败（用户{user_id}）: {str(e)}", "ERROR")
-        main_reply = clean_reply_text(add_emotion_intensity("有点小故障呢~ 我们稍后再聊呀~", "委屈", 1))
-        append_reply = None
-    
-    return main_reply, append_reply, main_delay, append_delay
-
 # ====================== 启动命令处理 ======================
-async def start(update: Update, context: CallbackContext):
+def start(update: Update, context: CallbackContext):
     """处理/start命令"""
     try:
-        await update.message.reply_text("你好呀，我是灵黯~ 很高兴认识你！")
+        update.message.reply_text("你好呀，我是灵黯~ 很高兴认识你！")
         write_log(f"用户{update.effective_user.id}发送/start命令", "INFO")
     except Exception as e:
         write_log(f"启动回复失败: {str(e)}", "ERROR")
@@ -854,20 +853,23 @@ def main():
     print(f"\n{'='*60}")
     print(f"Bot [{BOT_PROFILE['name']}] 启动成功")
     print(f"数据存储目录: {BOT_DATA_DIR}")
-    print(f"核心特性：同步API调用 + 异步消息处理 + 线程安全")
+    print(f"核心特性：同步API调用 + 完整功能 + Termux适配")
     print(f"用户关系系统：已加载{len(permanent_relations)}个永久关系")
     print(f"记忆关键词：{len(MEMORY_KEYWORDS)}个")
     print(f"{'='*60}\n")
     
-    # 创建Application
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    # 创建Updater
+    updater = Updater(token=TELEGRAM_BOT_TOKEN, use_context=True)
+    
+    # 获取调度器和任务队列
+    dp = updater.dispatcher
+    job_queue = updater.job_queue
     
     # 添加命令和消息处理器
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
     
     # 添加保活任务
-    job_queue = application.job_queue
     if job_queue:
         job_queue.run_repeating(keep_alive, interval=GLOBAL_CONFIG["keep_alive_interval"], first=10)
     
@@ -875,12 +877,17 @@ def main():
     print("Bot开始监听消息...")
     print("按 Ctrl+C 停止运行\n")
     
-    application.run_polling(
+    # 开始轮询
+    updater.start_polling(
         poll_interval=GLOBAL_CONFIG["poll_interval"],
         timeout=10,
         drop_pending_updates=True,
-        allowed_updates=Update.ALL_TYPES
+        bootstrap_retries=-1,
+        clean=True
     )
+    
+    # 保持运行
+    updater.idle()
 
 if __name__ == "__main__":
     main()
