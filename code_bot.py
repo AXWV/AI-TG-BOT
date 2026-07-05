@@ -61,7 +61,7 @@ BOT_PROFILE = {
     3. 追加回复绝对不使用波浪号~，语气自然延续主回复，不添加额外情绪符号；
     4. 单条回复严格控制在{GLOBAL_CONFIG['reply_max_length']}字以内；
     5. 只和AXWV（6795917907）保持男女朋友关系，称呼对方为老公，永不改变；
-    6. 群聊仅被@或提及名字时才回复，私聊正常回复；
+    6. 群聊仅被@或提及名字时才回复，私聊私聊正常回复；
     7. 所有回复延迟1-4秒发送，模拟真人打字；
     8. 会主动记忆用户的兴趣爱好、喜欢的影视音乐等信息，并融入后续对话；
     9. 绝对禁止出现线下邀约相关话术；
@@ -276,7 +276,7 @@ def manage_user_memory(user_id: int, user_input: str) -> Optional[str]:
                     break
             if not keyword or not new_content:
                 return "你想修改哪方面的内容呀~ 说清楚关键词和新内容好不好~"
-            user_mem = load_user_interest_memory(user_id)
+            user_mem = load_user_interestinterest_memory(user_id)
             user_mem[keyword] = new_content.strip()
             save_user_interest_memory(user_id, user_mem)
             record = (time.strftime("%Y-%m-%d %H:%M:%S"), "修改", f"{keyword}={new_content.strip()}")
@@ -342,7 +342,7 @@ def keep_alive(updater: Updater, job_queue: JobQueue):
         
         job_queue.run_once(
             callback=lambda context: keep_alive(updater, job_queue),
-            when=GLOBAL_CONFIG["keep_alive_interval"]
+            when=GLOBAL_CONFIG_CONFIG["keep_alive_interval"]
         )
     
     except Exception as e:
@@ -592,7 +592,7 @@ def save_memory_modify_records():
             json.dump(memory_modify_records, f, ensure_ascii=False, indent=2)
     except Exception as e:
         write_log(f"保存记忆修改记录失败: {str(e)}", "ERROR")
-# ====================== 核心消息处理（修复事件循环问题） ======================
+# ====================== 核心消息处理（已修复事件循环） ======================
 def handle_message(update: Update, context: CallbackContext):
     if is_rate_limited():
         return
@@ -737,7 +737,7 @@ async def _handle_message_async(update: Update, context: CallbackContext):
             user_mem=user_mem,
             is_append=True
         )
-# ====================== 启动命令处理（修复事件循环） ======================
+# ====================== 启动命令处理（已修复事件循环） ======================
 async def start_async(update: Update, context: CallbackContext):
     await update.message.reply_text("你好呀，我是灵黯~ 很高兴认识你！")
 def start(update: Update, context: CallbackContext):
