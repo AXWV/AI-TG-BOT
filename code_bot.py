@@ -51,14 +51,16 @@ GLOBAL_CONFIG = {
     "keep_alive_interval": 15,
     "keep_alive_timeout": 8,
     "reconnect_attempts": 3,
-    "append_reply_probability": 0.4,  # 增加追加回复概率
-    "max_api_tokens": 300,  # 增加token数量，确保有追加回复空间
+    "append_reply_probability": 0.4,
+    "max_api_tokens": 300,
     "api_retry_count": 2,
     "api_timeout": 15,
     "task_timeout": 20,
     "poll_interval": 0.5,
     "workers": 4,
-    "thread_pool_size": 10
+    "thread_pool_size": 10,
+    "max_backup_files": 5,  # 最大备份文件数量
+    "backup_compression": True  # 是否压缩备份
 }
 
 # 谢灵黯人设配置
@@ -71,27 +73,27 @@ BOT_PROFILE = {
     "relationship_desc": {"6795917907": "男女朋友（锁定AXWV，永久有效）"},
     "rule": f"""
     你是谢灵黯，一个15岁的活泼开朗学生，擅长线上聊天。
-    
-    【核心规则】
-    1. 对话完全拟人化、口语化，只进行线上聊天；
-    2. 主回复情绪通过语气词表达（开心用~最多2个，撒娇用嘛，委屈用呜呜，兴奋用！最多2个）；
-    3. 单条回复严格控制在{GLOBAL_CONFIG['reply_max_length']}字以内；
-    4. 只和AXWV（6795917907）保持男女朋友关系，称呼对方为老公，永不改变；
-    5. 群聊仅被@或提及名字时才回复，私聊正常回复；
-    6. 会主动记忆用户的兴趣爱好、喜欢的影视音乐等信息，并融入后续对话；
-    
-    【追加回复规则】
-    1. 追加回复绝对不使用波浪号~、感叹号！等情绪符号；
-    2. 追加回复必须紧密关联主回复，不偏离话题；
-    3. 追加回复不能提出新问题，只能补充说明；
-    4. 追加回复字数不超过50字；
-    5. 追加回复语气自然延续主回复；
-    
-    【禁止事项】
-    1. 绝对禁止出现线下邀约相关话术；
-    2. 绝对禁止虚构不存在的信息；
-    3. 回复中提及用户时直接用昵称，绝对禁止使用@符号；
-    4. 绝不对AXWV以外的用户使用亲密称呼。
+
+【核心规则】
+1. 对话完全拟人化、口语化，只进行线上聊天；
+2. 主回复情绪通过语气词表达（开心用~最多2个，撒娇用嘛，委屈用呜呜，兴奋用！最多2个）；
+3. 单条回复严格控制在{GLOBAL_CONFIG['reply_max_length']}字以内；
+4. 只和AXWV（6795917907）保持男女朋友关系，称呼对方为老公，永不改变；
+5. 群聊仅被@或提及名字时才回复，私聊正常回复；
+6. 会主动记忆用户的兴趣爱好、喜欢的影视音乐等信息，并融入后续对话；
+
+【追加回复规则】
+1. 追加回复绝对不使用波浪号~、感叹号！等情绪符号；
+2. 追加回复必须紧密关联主回复，不偏离话题；
+3. 追加回复不能提出新问题，只能补充说明；
+4. 追加回复字数不超过50字；
+5. 追加回复语气自然延续主回复；
+
+【禁止事项】
+1. 绝对禁止出现线下邀约相关话术；
+2. 绝对禁止虚构不存在的信息；
+3. 回复中提及用户时直接用昵称，绝对禁止使用@符号；
+4. 绝不对AXWV以外的用户使用亲密称呼。
     """
 }
 
@@ -180,7 +182,6 @@ MEMORY_KEYWORDS = []
 THREAD_LOCK = threading.Lock()
 
 # ====================== 线程池 ======================
-# 创建线程池用于并发处理消息
 thread_pool = concurrent.futures.ThreadPoolExecutor(
     max_workers=GLOBAL_CONFIG["thread_pool_size"],
     thread_name_prefix="BotWorker"
@@ -260,7 +261,7 @@ def write_log(content: str, level: str = "INFO"):
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(log_line)
-        print(log_line.strip())  # 同时打印到控制台
+        print(log_line.strip())
         if level.upper() == "ERROR":
             error_log_file = os.path.join(LOG_DIR, "error.log")
             with open(error_log_file, "a", encoding="utf-8") as f:
@@ -364,28 +365,135 @@ def is_rate_limited() -> bool:
     return False
 
 def backup_data():
+    """优化后的备份函数：跳过backups目录，避免重复备份"""
     global last_backup_time
     now = datetime.now()
     if now - last_backup_time < timedelta(hours=GLOBAL_CONFIG["backup_interval_hours"]):
         return
-    backup_filename = f"{now.strftime('%Y%m%d_%H%M%S')}_backup.zip"
-    backup_path = os.path.join(BACKUP_DIR, backup_filename)
+    
     try:
-        import zipfile
-        with zipfile.ZipFile(backup_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        # 生成备份文件名（日期+时间+随机字符串）
+        random_str = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=6))
+        backup_filename = f"backup_{now.strftime('%Y%m%d_%H%M%S')}_{random_str}.zip"
+        backup_path = os.path.join(BACKUP_DIR, backup_filename)
+        
+        # 获取backups目录的绝对路径，用于排除
+        backups_abs_path = os.path.abspath(BACKUP_DIR)
+        write_log(f"开始备份数据，跳过目录: {backups_abs_path}", "INFO")
+        
+        if GLOBAL_CONFIG["backup_compression"]:
+            import zipfile
+            # 创建压缩备份
+            with zipfile.ZipFile(backup_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                # 遍历BOT_DATA_DIR下的所有文件和目录
+                for root, dirs, files in os.walk(BOT_DATA_DIR):
+                    # 计算当前目录的绝对路径
+                    current_abs_path = os.path.abspath(root)
+                    
+                    # 跳过backups目录及其子目录
+                    if current_abs_path.startswith(backups_abs_path):
+                        write_log(f"跳过目录: {root}", "DEBUG")
+                        continue
+                    
+                    # 跳过备份文件本身
+                    if os.path.commonpath([current_abs_path, os.path.abspath(backup_path)]) == os.path.dirname(os.path.abspath(backup_path)):
+                        continue
+                    
+                    for file in files:
+                        # 跳过临时文件和日志文件（可选）
+                        if file.endswith('.tmp') or file.endswith('.log.bak'):
+                            continue
+                        
+                        file_path = os.path.join(root, file)
+                        try:
+                            # 计算相对路径
+                            arcname = os.path.relpath(file_path, BOT_DATA_DIR)
+                            zipf.write(file_path, arcname)
+                        except Exception as e:
+                            write_log(f"添加文件到备份失败 {file_path}: {str(e)}", "WARN")
+            
+            backup_size = os.path.getsize(backup_path) / (1024 * 1024)  # MB
+            write_log(f"压缩备份完成: {backup_path} ({backup_size:.2f} MB)", "INFO")
+        else:
+            # 不压缩的备份：直接复制文件
+            import shutil
+            # 创建备份目录
+            backup_dir = backup_path.replace('.zip', '')
+            os.makedirs(backup_dir, exist_ok=True)
+            
             for root, dirs, files in os.walk(BOT_DATA_DIR):
+                current_abs_path = os.path.abspath(root)
+                
+                # 跳过backups目录
+                if current_abs_path.startswith(backups_abs_path):
+                    continue
+                
+                # 计算目标目录
+                rel_path = os.path.relpath(root, BOT_DATA_DIR)
+                target_dir = os.path.join(backup_dir, rel_path)
+                os.makedirs(target_dir, exist_ok=True)
+                
                 for file in files:
-                    file_path = os.path.join(root, file)
-                    arcname = os.path.relpath(file_path, BOT_DATA_DIR)
-                    zipf.write(file_path, arcname)
+                    if file.endswith('.tmp'):
+                        continue
+                    
+                    src_file = os.path.join(root, file)
+                    dst_file = os.path.join(target_dir, file)
+                    try:
+                        shutil.copy2(src_file, dst_file)
+                    except Exception as e:
+                        write_log(f"复制文件失败 {src_file}: {str(e)}", "WARN")
+            
+            # 将目录压缩为zip（可选）
+            if True:  # 默认还是压缩
+                shutil.make_archive(backup_dir, 'zip', backup_dir)
+                shutil.rmtree(backup_dir)  # 删除临时目录
+                backup_path = backup_dir + '.zip'
+                backup_size = os.path.getsize(backup_path) / (1024 * 1024)
+                write_log(f"目录备份完成: {backup_path} ({backup_size:.2f} MB)", "INFO")
+        
         last_backup_time = now
-        write_log(f"数据备份成功：{backup_path}")
-        backups = sorted(os.listdir(BACKUP_DIR), reverse=True)
-        for old_backup in backups[3:]:
-            os.remove(os.path.join(BACKUP_DIR, old_backup))
-            write_log(f"删除旧备份：{old_backup}")
+        
+        # 清理旧的备份文件
+        cleanup_old_backups()
+        
+    except ImportError:
+        write_log("备份功能需要zipfile或shutil模块", "ERROR")
     except Exception as e:
         write_log(f"数据备份失败: {str(e)}", "ERROR")
+
+def cleanup_old_backups():
+    """清理旧的备份文件，只保留最新的几个"""
+    try:
+        if not os.path.exists(BACKUP_DIR):
+            return
+        
+        # 获取所有备份文件
+        backup_files = []
+        for f in os.listdir(BACKUP_DIR):
+            file_path = os.path.join(BACKUP_DIR, f)
+            if os.path.isfile(file_path) and (f.startswith('backup_') or f.endswith('.zip')):
+                backup_files.append((file_path, os.path.getmtime(file_path)))
+        
+        if len(backup_files) <= GLOBAL_CONFIG["max_backup_files"]:
+            return
+        
+        # 按修改时间排序，删除最旧的文件
+        backup_files.sort(key=lambda x: x[1])  # 按修改时间升序
+        files_to_delete = backup_files[:-GLOBAL_CONFIG["max_backup_files"]]  # 保留最新的N个
+        
+        for file_path, _ in files_to_delete:
+            try:
+                os.remove(file_path)
+                write_log(f"删除旧备份: {os.path.basename(file_path)}", "INFO")
+            except Exception as e:
+                write_log(f"删除旧备份失败 {file_path}: {str(e)}", "WARN")
+        
+        total_size = sum(os.path.getsize(f[0]) for f in backup_files[-GLOBAL_CONFIG["max_backup_files"]:]) / (1024 * 1024)
+        write_log(f"备份清理完成，保留{GLOBAL_CONFIG['max_backup_files']}个备份，总大小: {total_size:.2f} MB", "INFO")
+        
+    except Exception as e:
+        write_log(f"清理旧备份失败: {str(e)}", "ERROR")
 
 # ====================== t.me连接保活机制 ======================
 def keep_alive(context: CallbackContext):
@@ -506,7 +614,6 @@ def call_deepseek_api(
     emotion: Tuple[str, int],
     relation: str
 ) -> Tuple[str, Optional[str]]:
-    """同步API调用，确保稳定"""
     emotion_type, emotion_intensity = emotion
     user_nickname = get_user_nickname(user_id)
     final_relation = "亲密关系" if (user_id == 6795917907 and relation == "亲密关系") else relation
@@ -514,10 +621,9 @@ def call_deepseek_api(
     rel_desc = BOT_PROFILE["relationship_desc"].get(str(user_id), final_relation) if user_id == 6795917907 else final_relation
     memory_text = "用户记忆：" + "；".join([f"{k}={v}" for k, v in user_mem.items()]) if user_mem else "暂无用户记忆"
     
-    # 修复：使用更明确的分隔符
     SEPARATOR = "|||追加回复分隔符|||"
     
-    system_prompt = f"""你是谢灵黯（{BOT_PROFILE['short_name']}），一个15岁的活泼开朗学生，擅长线上聊天。
+    system_prompt = f"""你是谢灵黯（灵黯），一个15岁的活泼开朗学生，擅长线上聊天。
 
 【当前对话信息】
 用户关系：{rel_desc}（{rel_template}）
@@ -545,13 +651,10 @@ def call_deepseek_api(
 
     messages = [{"role": "system", "content": system_prompt.strip()}]
     
-    # 添加上下文历史
     history = conversation_history.get(user_id, [])
     if history:
-        # 只取最近2轮对话，避免token过多
         recent_history = history[-2:] if len(history) > 2 else history
         for u_msg, b_msg in recent_history:
-            # 确保历史消息也符合格式要求
             if SEPARATOR in b_msg:
                 main_part = b_msg.split(SEPARATOR)[0]
                 messages.append({"role": "user", "content": u_msg})
@@ -579,7 +682,6 @@ def call_deepseek_api(
         try:
             write_log(f"API调用开始（用户{user_id}，第{retry_count+1}次尝试）", "DEBUG")
             
-            # 使用requests库进行同步API调用
             response = requests.post(
                 DEEPSEEK_API_URL,
                 headers=headers,
@@ -593,10 +695,8 @@ def call_deepseek_api(
                 
                 write_log(f"API原始回复（用户{user_id}）: {raw_reply[:100]}...", "DEBUG")
                 
-                # 检查是否有分隔符
                 if SEPARATOR not in raw_reply:
                     write_log(f"API回复中未找到分隔符，尝试修复（用户{user_id}）", "WARN")
-                    # 尝试使用不同的分隔符
                     for sep in [SEPARATOR, "|||", "追加回复：", "追加："]:
                         if sep in raw_reply:
                             SEPARATOR = sep
@@ -605,16 +705,13 @@ def call_deepseek_api(
                 if SEPARATOR in raw_reply:
                     main_reply_raw, append_reply_raw = raw_reply.split(SEPARATOR, 1)
                     
-                    # 清理主回复
                     main_reply = clean_reply_text(add_emotion_intensity(
                         main_reply_raw.strip(), emotion_type, emotion_intensity, is_append=False
                     ))
                     
-                    # 清理追加回复
                     append_reply = append_reply_raw.strip()
                     if append_reply and len(append_reply) > 0:
                         append_reply = clean_reply_text(append_reply, is_append=True)
-                        # 确保追加回复不为空且不是无意义内容
                         if len(append_reply) > 5 and append_reply not in ["无", "没有", "None", "null", ""]:
                             write_log(f"成功获取追加回复（用户{user_id}）: {append_reply[:50]}...", "INFO")
                             return main_reply, append_reply
@@ -625,7 +722,6 @@ def call_deepseek_api(
                         write_log(f"追加回复为空（用户{user_id}）", "WARN")
                         return main_reply, None
                 else:
-                    # 如果没有分隔符，将整个回复作为主回复
                     write_log(f"API回复中无分隔符，仅返回主回复（用户{user_id}）", "WARN")
                     main_reply = clean_reply_text(add_emotion_intensity(
                         raw_reply.strip(), emotion_type, emotion_intensity, is_append=False
@@ -636,7 +732,7 @@ def call_deepseek_api(
                 error_msg = response.text[:200] if response.text else "无错误详情"
                 write_log(f"API错误状态码{response.status_code}: {error_msg}", "ERROR")
                 retry_count += 1
-                time.sleep(0.5 * (retry_count + 1))  # 递增等待
+                time.sleep(0.5 * (retry_count + 1))
                 
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
             write_log(f"API网络错误(重试{retry_count}/{max_retry}): {str(e)}", "ERROR")
@@ -647,7 +743,6 @@ def call_deepseek_api(
             retry_count += 1
             time.sleep(0.5 * (retry_count + 1))
     
-    # 兜底回复
     main_reply = clean_reply_text(add_emotion_intensity("网络有点卡呀~ 我们换个话题聊聊好不好~", "委屈", 1))
     return main_reply, None
 
@@ -658,7 +753,6 @@ def get_main_and_append_reply(
     emotion: Tuple[str, int],
     relation: str
 ) -> Tuple[str, Optional[str], float, float]:
-    """获取主回复和追加回复"""
     main_delay = round(random.uniform(*GLOBAL_CONFIG["typing_delay_range"]), 1)
     append_delay = round(random.uniform(*GLOBAL_CONFIG["append_reply_delay_range"]), 1)
     
@@ -667,9 +761,7 @@ def get_main_and_append_reply(
             user_id, user_input, user_mem, emotion, relation
         )
         
-        # 如果API没有返回追加回复，但配置需要追加回复，可以生成一个简单的追加回复
         if not append_reply and random.random() < GLOBAL_CONFIG["append_reply_probability"]:
-            # 生成简单的追加回复
             append_options = [
                 "对了，你最近怎么样呀~",
                 "突然想到，你之前说的那个事情怎么样了~",
@@ -742,7 +834,6 @@ def save_memory_modify_records():
 
 # ====================== 核心消息处理 ======================
 def process_message_in_thread(update: Update, context: CallbackContext):
-    """在线程中处理消息的核心逻辑"""
     if is_rate_limited():
         write_log("消息被限流", "WARN")
         return
@@ -756,26 +847,22 @@ def process_message_in_thread(update: Update, context: CallbackContext):
         
         write_log(f"线程处理消息 from {user_id}: {user_input[:50]}...", "DEBUG")
         
-        # 黑名单过滤
         if user_id in user_blacklist:
             write_log(f"黑名单用户{user_id}尝试发送消息: {user_input}", "WARN")
             return
         
-        # 超长消息过滤
         if len(user_input) > GLOBAL_CONFIG["max_user_input_length"]:
             reply = clean_reply_text(add_emotion_intensity("你的消息有点长呀~ 精简一点告诉我好不好~", "撒娇", 1))
             update.message.reply_text(reply)
             write_log(f"用户{user_id}发送超长消息（{len(user_input)}字），已拒绝", "WARN")
             return
         
-        # 敏感词过滤
         if check_sensitive_words(user_input):
             reply = clean_reply_text(add_emotion_intensity("这个话题我不太想聊呢~ 换个别的吧~", "委屈", 1))
             update.message.reply_text(reply)
             write_log(f"用户{user_id}发送敏感内容: {user_input}", "WARN")
             return
         
-        # 群聊/私聊回复判断
         if chat.type == Chat.PRIVATE:
             chat_type = "私聊"
             need_reply = True
@@ -788,7 +875,6 @@ def process_message_in_thread(update: Update, context: CallbackContext):
             write_log(f"[{chat_type}] 用户{user_id}消息无需回复: {user_input[:30]}...", "DEBUG")
             return
         
-        # 记忆管理（删除/修改）
         memory_manage_reply = manage_user_memory(user_id, user_input)
         if memory_manage_reply:
             update.message.reply_text(memory_manage_reply)
@@ -796,16 +882,13 @@ def process_message_in_thread(update: Update, context: CallbackContext):
             write_log(f"用户{user_id}执行记忆管理: {user_input} -> 回复: {memory_manage_reply}", "INFO")
             return
         
-        # 提取用户记忆
         extract_user_memory(user_id, user_input)
         user_mem = load_user_interest_memory(user_id)
         
-        # 获取关系和情绪
         relation = get_user_relation(user_id)
         emotion = get_current_emotion(user_id, user_input)
         emotion_str = f"{emotion[0]}（强度{emotion[1]}）"
         
-        # 模拟打字状态
         try:
             context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
         except Exception as e:
@@ -813,16 +896,13 @@ def process_message_in_thread(update: Update, context: CallbackContext):
         
         time.sleep(0.5)
         
-        # 获取主回复和追加回复
         main_reply, append_reply, main_delay, append_delay = get_main_and_append_reply(
             user_id, user_input, user_mem, emotion, relation
         )
         
-        # 发送主回复
         time.sleep(main_delay)
         update.message.reply_text(main_reply)
         
-        # 保存对话历史和全局记忆
         with THREAD_LOCK:
             if user_id not in conversation_history:
                 conversation_history[user_id] = []
@@ -841,7 +921,6 @@ def process_message_in_thread(update: Update, context: CallbackContext):
             }
         )
         
-        # 打印日志
         print_custom_log(
             user=user,
             chat_type=chat_type,
@@ -853,7 +932,6 @@ def process_message_in_thread(update: Update, context: CallbackContext):
             is_append=False
         )
         
-        # 发送追加回复（如有）
         if append_reply:
             write_log(f"准备发送追加回复（用户{user_id}）: {append_reply[:50]}...", "DEBUG")
             
@@ -865,10 +943,8 @@ def process_message_in_thread(update: Update, context: CallbackContext):
             time.sleep(append_delay)
             update.message.reply_text(append_reply)
             
-            # 保存追加回复到对话历史
             with THREAD_LOCK:
                 if user_id in conversation_history:
-                    # 将主回复和追加回复合并存储
                     conversation_history[user_id][-1] = (user_input, f"{main_reply} [追加: {append_reply}]")
                     if len(conversation_history[user_id]) > GLOBAL_CONFIG["max_history_rounds"]:
                         conversation_history[user_id].pop(0)
@@ -884,7 +960,6 @@ def process_message_in_thread(update: Update, context: CallbackContext):
                 }
             )
             
-            # 打印追加回复日志
             print_custom_log(
                 user=user,
                 chat_type=chat_type,
@@ -896,7 +971,6 @@ def process_message_in_thread(update: Update, context: CallbackContext):
                 is_append=True
             )
         
-        # 群打招呼功能
         if "去" in user_input and "群" in user_input and "打招呼" in user_input:
             chat_id_match = re.search(r"ID:\s*(-?\d+)", user_input)
             if chat_id_match:
@@ -913,7 +987,6 @@ def process_message_in_thread(update: Update, context: CallbackContext):
                     update.message.reply_text("我好像进不去这个群呢~ 可能没被邀请哦~")
     
     except Exception as e:
-        # 异常兜底
         write_log(f"消息处理异常（用户{user_id}）: {str(e)}", "ERROR")
         try:
             error_reply = clean_reply_text(add_emotion_intensity("刚才出了点小问题~ 我们重新聊呀~", "委屈", 1))
@@ -925,12 +998,9 @@ def process_message_in_thread(update: Update, context: CallbackContext):
         backup_data()
 
 def handle_message(update: Update, context: CallbackContext):
-    """主消息处理函数 - 将消息提交到线程池"""
     try:
-        # 将消息处理任务提交到线程池
         future = thread_pool.submit(process_message_in_thread, update, context)
         
-        # 添加回调处理异常
         def callback_done(f):
             try:
                 f.result(timeout=GLOBAL_CONFIG["task_timeout"])
@@ -941,7 +1011,6 @@ def handle_message(update: Update, context: CallbackContext):
         
         future.add_done_callback(callback_done)
         
-        # 立即返回，不阻塞主线程
         write_log(f"消息已提交到线程池处理（用户{update.effective_user.id}）", "DEBUG")
         
     except Exception as e:
@@ -954,7 +1023,6 @@ def handle_message(update: Update, context: CallbackContext):
 
 # ====================== 启动命令处理 ======================
 def start(update: Update, context: CallbackContext):
-    """处理/start命令"""
     try:
         update.message.reply_text("你好呀，我是灵黯~ 很高兴认识你！")
         write_log(f"用户{update.effective_user.id}发送/start命令", "INFO")
@@ -963,7 +1031,6 @@ def start(update: Update, context: CallbackContext):
 
 # ====================== 主函数 ======================
 def main():
-    """主函数"""
     init_all_files()
     load_all_data()
     write_log("Bot启动，所有数据加载完成", "INFO")
@@ -971,38 +1038,32 @@ def main():
     print(f"\n{'='*60}")
     print(f"Bot [{BOT_PROFILE['name']}] 启动成功")
     print(f"数据存储目录: {BOT_DATA_DIR}")
+    print(f"备份优化：跳过backups目录，最多保留{GLOBAL_CONFIG['max_backup_files']}个备份")
     print(f"追加回复概率: {GLOBAL_CONFIG['append_reply_probability'] * 100}%")
     print(f"线程池大小: {GLOBAL_CONFIG['thread_pool_size']}")
     print(f"工作线程数: {GLOBAL_CONFIG['workers']}")
-    print(f"核心特性：修复追加回复 + 线程池处理 + Termux适配")
     print(f"用户关系系统：已加载{len(permanent_relations)}个永久关系")
     print(f"记忆关键词：{len(MEMORY_KEYWORDS)}个")
     print(f"{'='*60}\n")
     
-    # 创建Updater，使用更多工作线程
     updater = Updater(
         token=TELEGRAM_BOT_TOKEN, 
         use_context=True,
         workers=GLOBAL_CONFIG["workers"]
     )
     
-    # 获取调度器和任务队列
     dp = updater.dispatcher
     job_queue = updater.job_queue
     
-    # 添加命令和消息处理器
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
     
-    # 添加保活任务
     if job_queue:
         job_queue.run_repeating(keep_alive, interval=GLOBAL_CONFIG["keep_alive_interval"], first=10)
     
-    # 启动Bot
     print("Bot开始监听消息...")
     print("按 Ctrl+C 停止运行\n")
     
-    # 开始轮询 - 使用更积极的参数
     updater.start_polling(
         poll_interval=GLOBAL_CONFIG["poll_interval"],
         timeout=10,
@@ -1012,10 +1073,8 @@ def main():
         allowed_updates=['message']
     )
     
-    # 保持运行
     updater.idle()
     
-    # 关闭线程池
     thread_pool.shutdown(wait=True)
 
 if __name__ == "__main__":
